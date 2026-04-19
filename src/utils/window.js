@@ -103,6 +103,7 @@ function getDefaultKeybinds() {
         toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
         toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
         nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
+        analyzeScreen: isMac ? 'Cmd+/' : 'Ctrl+/',
         previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
         nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
         scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
@@ -294,6 +295,30 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
             console.log(`Registered emergencyErase: ${keybinds.emergencyErase}`);
         } catch (error) {
             console.error(`Failed to register emergencyErase (${keybinds.emergencyErase}):`, error);
+        }
+    }
+
+    // Register analyze screen shortcut (Ctrl+/ by default)
+    // Works from ANY window without switching focus to the app
+    if (keybinds.analyzeScreen) {
+        try {
+            globalShortcut.register(keybinds.analyzeScreen, async () => {
+                console.log('Analyze Screen shortcut triggered (Ctrl+/)');
+                try {
+                    mainWindow.webContents.executeJavaScript(`
+                        if (window.captureManualScreenshot) {
+                            window.captureManualScreenshot();
+                        } else {
+                            console.error('captureManualScreenshot not available');
+                        }
+                    `);
+                } catch (error) {
+                    console.error('Error triggering screen analysis:', error);
+                }
+            });
+            console.log(`Registered analyzeScreen: ${keybinds.analyzeScreen}`);
+        } catch (error) {
+            console.error(`Failed to register analyzeScreen (${keybinds.analyzeScreen}):`, error);
         }
     }
 }

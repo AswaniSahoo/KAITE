@@ -6,6 +6,7 @@ const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const { createWindow, updateGlobalShortcuts } = require('./utils/window');
 const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/gemini');
 const storage = require('./storage');
+const { PROVIDERS } = require('./utils/providers');
 
 const geminiSessionRef = { current: null };
 let mainWindow = null;
@@ -295,5 +296,36 @@ function setupGeneralIpcHandlers() {
     // Debug logging from renderer
     ipcMain.on('log-message', (event, msg) => {
         console.log(msg);
+    });
+
+    // ============ PROVIDER CATALOG ============
+    ipcMain.handle('get-provider-catalog', async () => {
+        try {
+            return { success: true, data: PROVIDERS };
+        } catch (error) {
+            console.error('Error getting provider catalog:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // ============ OPENROUTER KEY ============
+    ipcMain.handle('storage:get-openrouter-api-key', async () => {
+        try {
+            const creds = storage.getCredentials();
+            return { success: true, data: creds.openrouterApiKey || '' };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('storage:set-openrouter-api-key', async (event, key) => {
+        try {
+            const creds = storage.getCredentials();
+            creds.openrouterApiKey = key;
+            storage.setCredentials(creds);
+            return { success: true };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
     });
 }

@@ -56,13 +56,17 @@ export class MainView extends LitElement {
             border: 1px solid rgba(59, 130, 246, 0.45);
             background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(139, 92, 246, 0.09) 100%);
             cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
+            transition:
+                border-color 0.2s,
+                background 0.2s;
         }
 
         .cloud-promo:hover {
             border-color: rgba(59, 130, 246, 0.65);
             background: linear-gradient(135deg, rgba(59, 130, 246, 0.16) 0%, rgba(139, 92, 246, 0.12) 100%);
-            box-shadow: 0 0 20px rgba(59, 130, 246, 0.15), 0 0 40px rgba(139, 92, 246, 0.08);
+            box-shadow:
+                0 0 20px rgba(59, 130, 246, 0.15),
+                0 0 40px rgba(139, 92, 246, 0.08);
         }
 
         .cloud-promo-glow {
@@ -119,7 +123,9 @@ export class MainView extends LitElement {
             letter-spacing: 0.5px;
         }
 
-        input, select, textarea {
+        input,
+        select,
+        textarea {
             background: var(--bg-elevated);
             color: var(--text-primary);
             border: 1px solid var(--border);
@@ -128,25 +134,32 @@ export class MainView extends LitElement {
             border-radius: var(--radius-sm);
             font-size: var(--font-size-sm);
             font-family: var(--font);
-            transition: border-color var(--transition), box-shadow var(--transition);
+            transition:
+                border-color var(--transition),
+                box-shadow var(--transition);
         }
 
-        input:hover:not(:focus), select:hover:not(:focus), textarea:hover:not(:focus) {
+        input:hover:not(:focus),
+        select:hover:not(:focus),
+        textarea:hover:not(:focus) {
             border-color: var(--text-muted);
         }
 
-        input:focus, select:focus, textarea:focus {
+        input:focus,
+        select:focus,
+        textarea:focus {
             outline: none;
             border-color: var(--accent);
             box-shadow: 0 0 0 1px var(--accent);
         }
 
-        input::placeholder, textarea::placeholder {
+        input::placeholder,
+        textarea::placeholder {
             color: var(--text-muted);
         }
 
         input.error {
-            border-color: var(--danger, #EF4444);
+            border-color: var(--danger, #ef4444);
         }
 
         select {
@@ -170,7 +183,8 @@ export class MainView extends LitElement {
             color: var(--text-muted);
         }
 
-        .form-hint a, .form-hint span.link {
+        .form-hint a,
+        .form-hint span.link {
             color: var(--accent);
             text-decoration: none;
             cursor: pointer;
@@ -196,7 +210,9 @@ export class MainView extends LitElement {
         }
 
         @keyframes whisper-spin {
-            to { transform: rotate(360deg); }
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         /* ── Start button ── */
@@ -328,7 +344,9 @@ export class MainView extends LitElement {
             border: 1px solid var(--border);
             background: var(--bg-elevated);
             cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
+            transition:
+                border-color 0.2s,
+                background 0.2s;
         }
 
         .mode-card:hover {
@@ -492,8 +510,13 @@ export class MainView extends LitElement {
         _geminiKey: { state: true },
         _groqKey: { state: true },
         _openaiKey: { state: true },
+        _openrouterKey: { state: true },
         _tokenError: { state: true },
         _keyError: { state: true },
+        // Provider selection
+        _textProvider: { state: true },
+        _textModel: { state: true },
+        _providerCatalog: { state: true },
         // Local AI state
         _ollamaHost: { state: true },
         _ollamaModel: { state: true },
@@ -515,12 +538,16 @@ export class MainView extends LitElement {
         this._geminiKey = '';
         this._groqKey = '';
         this._openaiKey = '';
+        this._openrouterKey = '';
         this._tokenError = false;
         this._keyError = false;
         this._showLocalHelp = false;
         this._ollamaHost = 'http://127.0.0.1:11434';
         this._ollamaModel = 'llama3.1';
         this._whisperModel = 'Xenova/whisper-small';
+        this._textProvider = 'groq';
+        this._textModel = '';
+        this._providerCatalog = {};
 
         this._animId = null;
         this._time = 0;
@@ -533,18 +560,25 @@ export class MainView extends LitElement {
 
     async _loadFromStorage() {
         try {
-            const [prefs, creds] = await Promise.all([
+            const [prefs, creds, catalog] = await Promise.all([
                 cheatingDaddy.storage.getPreferences(),
                 cheatingDaddy.storage.getCredentials().catch(() => ({})),
+                cheatingDaddy.storage.getProviderCatalog().catch(() => ({})),
             ]);
 
             this._mode = prefs.providerMode || 'cloud';
+            this._providerCatalog = catalog;
 
             // Load keys
             this._token = creds.cloudToken || '';
-            this._geminiKey = await cheatingDaddy.storage.getApiKey().catch(() => '') || '';
-            this._groqKey = await cheatingDaddy.storage.getGroqApiKey().catch(() => '') || '';
+            this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
+            this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
             this._openaiKey = creds.openaiKey || '';
+            this._openrouterKey = (await cheatingDaddy.storage.getOpenrouterApiKey().catch(() => '')) || '';
+
+            // Load provider selection
+            this._textProvider = prefs.textProvider || 'groq';
+            this._textModel = prefs.textModel || '';
 
             // Load local AI settings
             this._ollamaHost = prefs.ollamaHost || 'http://127.0.0.1:11434';
@@ -596,7 +630,7 @@ export class MainView extends LitElement {
         // Mouse tracking
         this._mouseX = -1;
         this._mouseY = -1;
-        btn.addEventListener('mousemove', (e) => {
+        btn.addEventListener('mousemove', e => {
             const rect = btn.getBoundingClientRect();
             this._mouseX = (e.clientX - rect.left) / rect.width;
             this._mouseY = (e.clientY - rect.top) / rect.height;
@@ -616,7 +650,10 @@ export class MainView extends LitElement {
         const img = dCtx.createImageData(cols, rows);
         for (let i = 0; i < img.data.length; i += 4) {
             const v = Math.random() > 0.5 ? 255 : 0;
-            img.data[i] = v; img.data[i+1] = v; img.data[i+2] = v; img.data[i+3] = 255;
+            img.data[i] = v;
+            img.data[i + 1] = v;
+            img.data[i + 2] = v;
+            img.data[i + 3] = 255;
         }
         dCtx.putImageData(img, 0, 0);
 
@@ -728,6 +765,28 @@ export class MainView extends LitElement {
         this.requestUpdate();
     }
 
+    async _saveOpenrouterKey(val) {
+        this._openrouterKey = val;
+        await cheatingDaddy.storage.setOpenrouterApiKey(val);
+        this.requestUpdate();
+    }
+
+    async _saveTextProvider(val) {
+        this._textProvider = val;
+        // Reset model to provider default when switching
+        const providerConfig = this._providerCatalog[val];
+        this._textModel = providerConfig?.defaultModel || '';
+        await cheatingDaddy.storage.updatePreference('textProvider', val);
+        await cheatingDaddy.storage.updatePreference('textModel', this._textModel);
+        this.requestUpdate();
+    }
+
+    async _saveTextModel(val) {
+        this._textModel = val;
+        await cheatingDaddy.storage.updatePreference('textModel', val);
+        this.requestUpdate();
+    }
+
     async _saveOllamaHost(val) {
         this._ollamaHost = val;
         await cheatingDaddy.storage.updatePreference('ollamaHost', val);
@@ -796,15 +855,51 @@ export class MainView extends LitElement {
     _renderStartButton() {
         const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 
-        const cmdIcon = html`<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/></svg>`;
-        const ctrlIcon = html`<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>`;
-        const enterIcon = html`<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10l-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>`;
+        const cmdIcon = html`<svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path
+                d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"
+            />
+        </svg>`;
+        const ctrlIcon = html`<svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M6 15l6-6 6 6" />
+        </svg>`;
+        const enterIcon = html`<svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M9 10l-5 5 5 5" />
+            <path d="M20 4v7a4 4 0 0 1-4 4H4" />
+        </svg>`;
 
         return html`
-            <button
-                class="start-button ${this.isInitializing ? 'disabled' : ''}"
-                @click=${() => this._handleStart()}
-            >
+            <button class="start-button ${this.isInitializing ? 'disabled' : ''}" @click=${() => this._handleStart()}>
                 <canvas class="btn-aurora"></canvas>
                 <canvas class="btn-dither"></canvas>
                 <span class="btn-label">
@@ -841,8 +936,7 @@ export class MainView extends LitElement {
                 <div class="form-hint">DM soham to get your invite code</div>
             </div>
 
-            ${this._renderStartButton()}
-            ${this._renderDivider()}
+            ${this._renderStartButton()} ${this._renderDivider()}
 
             <div class="mode-cards">
                 <div class="mode-card" @click=${() => this._saveMode('byok')}>
@@ -860,12 +954,16 @@ export class MainView extends LitElement {
     // ── BYOK mode ──
 
     _renderByokMode() {
+        const providerConfig = this._providerCatalog[this._textProvider];
+        const models = providerConfig?.models || [];
+        const currentModel = this._textModel || providerConfig?.defaultModel || '';
+
         return html`
             <div class="form-group">
                 <label class="form-label">Gemini API Key</label>
                 <input
                     type="password"
-                    placeholder="Required"
+                    placeholder="Required for audio transcription"
                     .value=${this._geminiKey}
                     @input=${e => this._saveGeminiKey(e.target.value)}
                     class=${this._keyError ? 'error' : ''}
@@ -876,20 +974,63 @@ export class MainView extends LitElement {
             </div>
 
             <div class="form-group">
-                <label class="form-label">Groq API Key</label>
-                <input
-                    type="password"
-                    placeholder="Optional"
-                    .value=${this._groqKey}
-                    @input=${e => this._saveGroqKey(e.target.value)}
-                />
-                <div class="form-hint">
-                    <span class="link" @click=${() => this.onExternalLink('https://console.groq.com/keys')}>Get Groq key</span>
-                </div>
+                <label class="form-label">Text Response Provider</label>
+                <select .value=${this._textProvider} @change=${e => this._saveTextProvider(e.target.value)}>
+                    <option value="groq" ?selected=${this._textProvider === 'groq'}>Groq (Free, Fast)</option>
+                    <option value="openrouter" ?selected=${this._textProvider === 'openrouter'}>OpenRouter (Any Model)</option>
+                    <option value="gemini" ?selected=${this._textProvider === 'gemini'}>Gemini (Google)</option>
+                    <option value="ollama" ?selected=${this._textProvider === 'ollama'}>Ollama (Local)</option>
+                </select>
             </div>
 
-            ${this._renderStartButton()}
-            ${this._renderDivider()}
+            <div class="form-group">
+                <label class="form-label">Model</label>
+                <select .value=${currentModel} @change=${e => this._saveTextModel(e.target.value)}>
+                    ${models.map(
+                        m => html`
+                            <option value=${m.id} ?selected=${currentModel === m.id}>
+                                ${m.name} ${m.speed === 'fastest' ? '⚡' : m.speed === 'fast' ? '🚀' : '🧠'}
+                            </option>
+                        `
+                    )}
+                </select>
+            </div>
+
+            ${this._textProvider === 'groq'
+                ? html`
+                      <div class="form-group">
+                          <label class="form-label">Groq API Key</label>
+                          <input
+                              type="password"
+                              placeholder="Required for Groq"
+                              .value=${this._groqKey}
+                              @input=${e => this._saveGroqKey(e.target.value)}
+                          />
+                          <div class="form-hint">
+                              <span class="link" @click=${() => this.onExternalLink('https://console.groq.com/keys')}>Get Groq key</span> (free tier
+                              available)
+                          </div>
+                      </div>
+                  `
+                : ''}
+            ${this._textProvider === 'openrouter'
+                ? html`
+                      <div class="form-group">
+                          <label class="form-label">OpenRouter API Key</label>
+                          <input
+                              type="password"
+                              placeholder="Required for OpenRouter"
+                              .value=${this._openrouterKey}
+                              @input=${e => this._saveOpenrouterKey(e.target.value)}
+                          />
+                          <div class="form-hint">
+                              <span class="link" @click=${() => this.onExternalLink('https://openrouter.ai/keys')}>Get OpenRouter key</span> (pay per
+                              use)
+                          </div>
+                      </div>
+                  `
+                : ''}
+            ${this._renderStartButton()} ${this._renderDivider()}
 
             <div class="cloud-promo" @click=${() => this._saveMode('cloud')}>
                 <div class="cloud-promo-glow"></div>
@@ -923,13 +1064,15 @@ export class MainView extends LitElement {
 
             <div class="form-group">
                 <label class="form-label">Ollama Model</label>
-                <input
-                    type="text"
-                    placeholder="llama3.1"
-                    .value=${this._ollamaModel}
-                    @input=${e => this._saveOllamaModel(e.target.value)}
-                />
-                <div class="form-hint">Run <code style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-elevated); padding: 1px 4px; border-radius: 3px;">ollama pull ${this._ollamaModel}</code> first</div>
+                <input type="text" placeholder="llama3.1" .value=${this._ollamaModel} @input=${e => this._saveOllamaModel(e.target.value)} />
+                <div class="form-hint">
+                    Run
+                    <code
+                        style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-elevated); padding: 1px 4px; border-radius: 3px;"
+                        >ollama pull ${this._ollamaModel}</code
+                    >
+                    first
+                </div>
             </div>
 
             <div class="form-group">
@@ -937,20 +1080,20 @@ export class MainView extends LitElement {
                     <label class="form-label">Whisper Model</label>
                     ${this.whisperDownloading ? html`<div class="whisper-spinner"></div>` : ''}
                 </div>
-                <select
-                    .value=${this._whisperModel}
-                    @change=${e => this._saveWhisperModel(e.target.value)}
-                >
-                    <option value="Xenova/whisper-tiny" ?selected=${this._whisperModel === 'Xenova/whisper-tiny'}>Tiny (fastest, least accurate)</option>
+                <select .value=${this._whisperModel} @change=${e => this._saveWhisperModel(e.target.value)}>
+                    <option value="Xenova/whisper-tiny" ?selected=${this._whisperModel === 'Xenova/whisper-tiny'}>
+                        Tiny (fastest, least accurate)
+                    </option>
                     <option value="Xenova/whisper-base" ?selected=${this._whisperModel === 'Xenova/whisper-base'}>Base</option>
                     <option value="Xenova/whisper-small" ?selected=${this._whisperModel === 'Xenova/whisper-small'}>Small (recommended)</option>
-                    <option value="Xenova/whisper-medium" ?selected=${this._whisperModel === 'Xenova/whisper-medium'}>Medium (most accurate, slowest)</option>
+                    <option value="Xenova/whisper-medium" ?selected=${this._whisperModel === 'Xenova/whisper-medium'}>
+                        Medium (most accurate, slowest)
+                    </option>
                 </select>
                 <div class="form-hint">${this.whisperDownloading ? 'Downloading model...' : 'Downloaded automatically on first use'}</div>
             </div>
 
-            ${this._renderStartButton()}
-            ${this._renderDivider()}
+            ${this._renderStartButton()} ${this._renderDivider()}
 
             <div class="cloud-promo" @click=${() => this._saveMode('cloud')}>
                 <div class="cloud-promo-glow"></div>
@@ -970,27 +1113,46 @@ export class MainView extends LitElement {
     // ── Main render ──
 
     render() {
-        const helpIcon = html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0m9 5v.01" /><path d="M12 13.5a1.5 1.5 0 0 1 1-1.5a2.6 2.6 0 1 0-3-4" /></g></svg>`;
-        const closeIcon = html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 6L6 18M6 6l12 12" /></svg>`;
+        const helpIcon = html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+            <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0m9 5v.01" />
+                <path d="M12 13.5a1.5 1.5 0 0 1 1-1.5a2.6 2.6 0 1 0-3-4" />
+            </g>
+        </svg>`;
+        const closeIcon = html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 6L6 18M6 6l12 12" />
+        </svg>`;
 
         return html`
             <div class="form-wrapper">
-                ${this._mode === 'local' ? html`
-                    <div class="title-row">
-                        <div class="page-title">Cheating Daddy <span class="mode-suffix">Local AI</span></div>
-                        <button class="help-btn" @click=${() => { this._showLocalHelp = !this._showLocalHelp; }}>${this._showLocalHelp ? closeIcon : helpIcon}</button>
-                    </div>
-                ` : html`
-                    <div class="page-title">
-                        ${this._mode === 'cloud' ? 'Cheating Daddy Cloud' : html`Cheating Daddy <span class="mode-suffix">BYOK</span>`}
-                    </div>
-                `}
+                ${this._mode === 'local'
+                    ? html`
+                          <div class="title-row">
+                              <div class="page-title">Cheating Daddy <span class="mode-suffix">Local AI</span></div>
+                              <button
+                                  class="help-btn"
+                                  @click=${() => {
+                                      this._showLocalHelp = !this._showLocalHelp;
+                                  }}
+                              >
+                                  ${this._showLocalHelp ? closeIcon : helpIcon}
+                              </button>
+                          </div>
+                      `
+                    : html`
+                          <div class="page-title">
+                              ${this._mode === 'cloud' ? 'Cheating Daddy Cloud' : html`Cheating Daddy <span class="mode-suffix">BYOK</span>`}
+                          </div>
+                      `}
                 <div class="page-subtitle">
-                    ${this._mode === 'cloud' ? 'Enter your invite code to get started' : this._mode === 'byok' ? 'Bring your own API keys' : 'Run models locally on your machine'}
+                    ${this._mode === 'cloud'
+                        ? 'Enter your invite code to get started'
+                        : this._mode === 'byok'
+                          ? 'Bring your own API keys'
+                          : 'Run models locally on your machine'}
                 </div>
 
-                ${this._mode === 'cloud' ? this._renderCloudMode() : ''}
-                ${this._mode === 'byok' ? this._renderByokMode() : ''}
+                ${this._mode === 'cloud' ? this._renderCloudMode() : ''} ${this._mode === 'byok' ? this._renderByokMode() : ''}
                 ${this._mode === 'local' ? (this._showLocalHelp ? this._renderLocalHelp() : this._renderLocalMode()) : ''}
             </div>
         `;
@@ -1001,17 +1163,26 @@ export class MainView extends LitElement {
             <div class="help-content">
                 <div class="help-section">
                     <div class="help-section-title">What is Ollama?</div>
-                    <div class="help-section-text">Ollama lets you run large language models locally on your machine. Everything stays on your computer — no data leaves your device.</div>
+                    <div class="help-section-text">
+                        Ollama lets you run large language models locally on your machine. Everything stays on your computer — no data leaves your
+                        device.
+                    </div>
                 </div>
 
                 <div class="help-section">
                     <div class="help-section-title">Install Ollama</div>
-                    <div class="help-section-text">Download from <span class="help-link" @click=${() => this.onExternalLink('https://ollama.com/download')}>ollama.com/download</span> and install it.</div>
+                    <div class="help-section-text">
+                        Download from
+                        <span class="help-link" @click=${() => this.onExternalLink('https://ollama.com/download')}>ollama.com/download</span> and
+                        install it.
+                    </div>
                 </div>
 
                 <div class="help-section">
                     <div class="help-section-title">Ollama must be running</div>
-                    <div class="help-section-text">Ollama needs to be running before you start a session. If it's not running, open your terminal and type:</div>
+                    <div class="help-section-text">
+                        Ollama needs to be running before you start a session. If it's not running, open your terminal and type:
+                    </div>
                     <code class="help-code">ollama serve</code>
                 </div>
 
@@ -1031,22 +1202,38 @@ export class MainView extends LitElement {
                 </div>
 
                 <div class="help-section">
-                    <div class="help-warn">Avoid "thinking" models (e.g. deepseek-r1, qwq). Local inference is already slower — a thinking model adds extra delay before responding.</div>
+                    <div class="help-warn">
+                        Avoid "thinking" models (e.g. deepseek-r1, qwq). Local inference is already slower — a thinking model adds extra delay before
+                        responding.
+                    </div>
                 </div>
 
                 <div class="help-section">
                     <div class="help-section-title">Whisper</div>
-                    <div class="help-section-text">The Whisper speech-to-text model is downloaded automatically the first time you start a session. This is a one-time download.</div>
+                    <div class="help-section-text">
+                        The Whisper speech-to-text model is downloaded automatically the first time you start a session. This is a one-time download.
+                    </div>
                 </div>
 
                 <hr class="help-divider" />
 
                 <div class="help-section">
                     <div class="help-section-title">Computer hanging or slow?</div>
-                    <div class="help-section-text">Running models locally uses a lot of RAM and CPU. If your computer slows down or freezes, it's likely the LLM. Cloud mode gives you faster, better responses without any load on your machine.</div>
+                    <div class="help-section-text">
+                        Running models locally uses a lot of RAM and CPU. If your computer slows down or freezes, it's likely the LLM. Cloud mode
+                        gives you faster, better responses without any load on your machine.
+                    </div>
                 </div>
 
-                <button class="help-cloud-btn" @click=${() => { this._showLocalHelp = false; this._saveMode('cloud'); }}>Switch to Cloud</button>
+                <button
+                    class="help-cloud-btn"
+                    @click=${() => {
+                        this._showLocalHelp = false;
+                        this._saveMode('cloud');
+                    }}
+                >
+                    Switch to Cloud
+                </button>
             </div>
         `;
     }
