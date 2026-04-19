@@ -450,12 +450,12 @@ async function callSingleProvider(provider, model, apiKey, messages, systemPromp
 function buildFailoverChain(primaryProvider, primaryModel, apiKeys, ollamaHost) {
     const chain = [];
 
-    // Priority order for failover (best quality models per provider)
+    // Priority order for failover (uses registry defaults)
     const providerOrder = [
-        { key: 'groq', model: 'qwen-qwq-32b' },
-        { key: 'openrouter', model: 'google/gemini-2.5-flash-preview' },
-        { key: 'gemini', model: 'gemini-2.5-flash' },
-        { key: 'ollama', model: 'gemma3:4b' },
+        { key: 'groq', model: PROVIDERS.groq.defaultModel },
+        { key: 'openrouter', model: PROVIDERS.openrouter.defaultModel },
+        { key: 'gemini', model: PROVIDERS.gemini.defaultModel },
+        { key: 'ollama', model: PROVIDERS.ollama.defaultModel },
     ];
 
     // Primary goes first with user-selected model
@@ -473,7 +473,7 @@ function buildFailoverChain(primaryProvider, primaryModel, apiKeys, ollamaHost) 
     if (primaryProvider === 'ollama') {
         chain.push({
             provider: 'ollama',
-            model: primaryModel || 'gemma3:4b',
+            model: primaryModel || PROVIDERS.ollama.defaultModel,
             apiKey: null,
         });
     }
