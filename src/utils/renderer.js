@@ -49,12 +49,12 @@ const storage = {
     async setApiKey(apiKey) {
         return ipcRenderer.invoke('storage:set-api-key', apiKey);
     },
-    async getGroqApiKey() {
-        const result = await ipcRenderer.invoke('storage:get-groq-api-key');
+    async getOllamaCloudApiKey() {
+        const result = await ipcRenderer.invoke('storage:get-ollama-cloud-api-key');
         return result.success ? result.data : '';
     },
-    async setGroqApiKey(groqApiKey) {
-        return ipcRenderer.invoke('storage:set-groq-api-key', groqApiKey);
+    async setOllamaCloudApiKey(key) {
+        return ipcRenderer.invoke('storage:set-ollama-cloud-api-key', key);
     },
 
     // Preferences

@@ -508,9 +508,7 @@ export class MainView extends LitElement {
         _mode: { state: true },
         _token: { state: true },
         _geminiKey: { state: true },
-        _groqKey: { state: true },
-        _openaiKey: { state: true },
-        _openrouterKey: { state: true },
+        _ollamaCloudKey: { state: true },
         _tokenError: { state: true },
         _keyError: { state: true },
         // Provider selection
@@ -536,8 +534,7 @@ export class MainView extends LitElement {
         this._mode = 'cloud';
         this._token = '';
         this._geminiKey = '';
-        this._groqKey = '';
-        this._openaiKey = '';
+        this._ollamaCloudKey = '';
         this._openrouterKey = '';
         this._tokenError = false;
         this._keyError = false;
@@ -545,7 +542,7 @@ export class MainView extends LitElement {
         this._ollamaHost = 'http://127.0.0.1:11434';
         this._ollamaModel = 'llama3.1';
         this._whisperModel = 'Xenova/whisper-small';
-        this._textProvider = 'groq';
+        this._textProvider = 'gemini';
         this._textModel = '';
         this._providerCatalog = {};
 
@@ -572,12 +569,11 @@ export class MainView extends LitElement {
             // Load keys
             this._token = creds.cloudToken || '';
             this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
-            this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
-            this._openaiKey = creds.openaiKey || '';
+            this._ollamaCloudKey = (await cheatingDaddy.storage.getOllamaCloudApiKey().catch(() => '')) || '';
             this._openrouterKey = (await cheatingDaddy.storage.getOpenrouterApiKey().catch(() => '')) || '';
 
             // Load provider selection
-            this._textProvider = prefs.textProvider || 'groq';
+            this._textProvider = prefs.textProvider || 'gemini';
             this._textModel = prefs.textModel || '';
 
             // Load local AI settings
@@ -750,18 +746,9 @@ export class MainView extends LitElement {
         this.requestUpdate();
     }
 
-    async _saveGroqKey(val) {
-        this._groqKey = val;
-        await cheatingDaddy.storage.setGroqApiKey(val);
-        this.requestUpdate();
-    }
-
-    async _saveOpenaiKey(val) {
-        this._openaiKey = val;
-        try {
-            const creds = await cheatingDaddy.storage.getCredentials().catch(() => ({}));
-            await cheatingDaddy.storage.setCredentials({ ...creds, openaiKey: val });
-        } catch (e) {}
+    async _saveOllamaCloudKey(val) {
+        this._ollamaCloudKey = val;
+        await cheatingDaddy.storage.setOllamaCloudApiKey(val);
         this.requestUpdate();
     }
 
@@ -941,7 +928,7 @@ export class MainView extends LitElement {
             <div class="mode-cards">
                 <div class="mode-card" @click=${() => this._saveMode('byok')}>
                     <span class="mode-card-title">Use your API keys</span>
-                    <span class="mode-card-desc">Bring your own Gemini / Groq keys</span>
+                    <span class="mode-card-desc">Bring your own Gemini / OpenRouter / Ollama keys</span>
                 </div>
                 <div class="mode-card" @click=${() => this._saveMode('local')}>
                     <span class="mode-card-title">Use local AI</span>
@@ -963,22 +950,51 @@ export class MainView extends LitElement {
                 <label class="form-label">Gemini API Key</label>
                 <input
                     type="password"
-                    placeholder="Required for audio transcription"
+                    placeholder="Required for audio transcription + vision"
                     .value=${this._geminiKey}
                     @input=${e => this._saveGeminiKey(e.target.value)}
                     class=${this._keyError ? 'error' : ''}
                 />
                 <div class="form-hint">
                     <span class="link" @click=${() => this.onExternalLink('https://aistudio.google.com/apikey')}>Get Gemini key</span>
+                    (free, used for transcription and as primary AI)
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">OpenRouter API Key</label>
+                <input
+                    type="password"
+                    placeholder="Optional, for premium models"
+                    .value=${this._openrouterKey}
+                    @input=${e => this._saveOpenrouterKey(e.target.value)}
+                />
+                <div class="form-hint">
+                    <span class="link" @click=${() => this.onExternalLink('https://openrouter.ai/keys')}>Get OpenRouter key</span>
+                    (pay per use, access Claude/GPT/Gemma)
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Ollama Cloud API Key</label>
+                <input
+                    type="password"
+                    placeholder="Optional, free tier with Qwen 3.5 + Gemma 4"
+                    .value=${this._ollamaCloudKey}
+                    @input=${e => this._saveOllamaCloudKey(e.target.value)}
+                />
+                <div class="form-hint">
+                    <span class="link" @click=${() => this.onExternalLink('https://ollama.com/settings/keys')}>Get Ollama Cloud key</span>
+                    (free, resets every 5h, powerful reasoning models)
                 </div>
             </div>
 
             <div class="form-group">
                 <label class="form-label">Text Response Provider</label>
                 <select .value=${this._textProvider} @change=${e => this._saveTextProvider(e.target.value)}>
-                    <option value="groq" ?selected=${this._textProvider === 'groq'}>Groq (Free, Fast)</option>
+                    <option value="gemini" ?selected=${this._textProvider === 'gemini'}>Gemini (Free, Recommended)</option>
                     <option value="openrouter" ?selected=${this._textProvider === 'openrouter'}>OpenRouter (Any Model)</option>
-                    <option value="gemini" ?selected=${this._textProvider === 'gemini'}>Gemini (Google)</option>
+                    <option value="ollamaCloud" ?selected=${this._textProvider === 'ollamaCloud'}>Ollama Cloud (Free, Qwen/Gemma)</option>
                     <option value="ollama" ?selected=${this._textProvider === 'ollama'}>Ollama (Local)</option>
                 </select>
             </div>
@@ -996,46 +1012,12 @@ export class MainView extends LitElement {
                 </select>
             </div>
 
-            ${this._textProvider === 'groq'
-                ? html`
-                      <div class="form-group">
-                          <label class="form-label">Groq API Key</label>
-                          <input
-                              type="password"
-                              placeholder="Required for Groq"
-                              .value=${this._groqKey}
-                              @input=${e => this._saveGroqKey(e.target.value)}
-                          />
-                          <div class="form-hint">
-                              <span class="link" @click=${() => this.onExternalLink('https://console.groq.com/keys')}>Get Groq key</span> (free tier
-                              available)
-                          </div>
-                      </div>
-                  `
-                : ''}
-            ${this._textProvider === 'openrouter'
-                ? html`
-                      <div class="form-group">
-                          <label class="form-label">OpenRouter API Key</label>
-                          <input
-                              type="password"
-                              placeholder="Required for OpenRouter"
-                              .value=${this._openrouterKey}
-                              @input=${e => this._saveOpenrouterKey(e.target.value)}
-                          />
-                          <div class="form-hint">
-                              <span class="link" @click=${() => this.onExternalLink('https://openrouter.ai/keys')}>Get OpenRouter key</span> (pay per
-                              use)
-                          </div>
-                      </div>
-                  `
-                : ''}
             ${this._renderStartButton()} ${this._renderDivider()}
 
             <div class="cloud-promo" @click=${() => this._saveMode('cloud')}>
                 <div class="cloud-promo-glow"></div>
                 <div class="cloud-promo-header">
-                    <span class="cloud-promo-title">Switch to Cheating Daddy Cloud</span>
+                    <span class="cloud-promo-title">Switch to KAITE Cloud</span>
                     <span class="cloud-promo-arrow">&rarr;</span>
                 </div>
                 <div class="cloud-promo-desc">No API keys, no setup, no billing headaches. It just works.</div>
@@ -1098,7 +1080,7 @@ export class MainView extends LitElement {
             <div class="cloud-promo" @click=${() => this._saveMode('cloud')}>
                 <div class="cloud-promo-glow"></div>
                 <div class="cloud-promo-header">
-                    <span class="cloud-promo-title">Switch to Cheating Daddy Cloud</span>
+                    <span class="cloud-promo-title">Switch to KAITE Cloud</span>
                     <span class="cloud-promo-arrow">&rarr;</span>
                 </div>
                 <div class="cloud-promo-desc">No API keys, no setup, no billing headaches. It just works.</div>
@@ -1128,7 +1110,7 @@ export class MainView extends LitElement {
                 ${this._mode === 'local'
                     ? html`
                           <div class="title-row">
-                              <div class="page-title">Cheating Daddy <span class="mode-suffix">Local AI</span></div>
+                              <div class="page-title">KAITE <span class="mode-suffix">Local AI</span></div>
                               <button
                                   class="help-btn"
                                   @click=${() => {
@@ -1140,9 +1122,7 @@ export class MainView extends LitElement {
                           </div>
                       `
                     : html`
-                          <div class="page-title">
-                              ${this._mode === 'cloud' ? 'Cheating Daddy Cloud' : html`Cheating Daddy <span class="mode-suffix">BYOK</span>`}
-                          </div>
+                          <div class="page-title">${this._mode === 'cloud' ? 'KAITE Cloud' : html`KAITE <span class="mode-suffix">BYOK</span>`}</div>
                       `}
                 <div class="page-subtitle">
                     ${this._mode === 'cloud'

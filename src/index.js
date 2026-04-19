@@ -119,21 +119,24 @@ function setupStorageIpcHandlers() {
         }
     });
 
-    ipcMain.handle('storage:get-groq-api-key', async () => {
+    ipcMain.handle('storage:get-ollama-cloud-api-key', async () => {
         try {
-            return { success: true, data: storage.getGroqApiKey() };
+            const creds = storage.getCredentials();
+            return { success: true, data: creds.ollamaApiKey || '' };
         } catch (error) {
-            console.error('Error getting Groq API key:', error);
+            console.error('Error getting Ollama Cloud API key:', error);
             return { success: false, error: error.message };
         }
     });
 
-    ipcMain.handle('storage:set-groq-api-key', async (event, groqApiKey) => {
+    ipcMain.handle('storage:set-ollama-cloud-api-key', async (event, key) => {
         try {
-            storage.setGroqApiKey(groqApiKey);
+            const creds = storage.getCredentials();
+            creds.ollamaApiKey = key;
+            storage.setCredentials(creds);
             return { success: true };
         } catch (error) {
-            console.error('Error setting Groq API key:', error);
+            console.error('Error setting Ollama Cloud API key:', error);
             return { success: false, error: error.message };
         }
     });

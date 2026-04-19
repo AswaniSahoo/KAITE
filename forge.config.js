@@ -7,7 +7,7 @@ module.exports = {
             unpack: '**/{onnxruntime-node,onnxruntime-common,@huggingface/transformers,sharp,@img}/**',
         },
         extraResource: ['./src/assets/SystemAudioDump'],
-        name: 'Cheating Daddy',
+        name: 'KAITE',
         icon: 'src/assets/logo',
         // use `security find-identity -v -p codesigning` to find your identity
         // for macos signing
@@ -32,9 +32,9 @@ module.exports = {
         {
             name: '@electron-forge/maker-squirrel',
             config: {
-                name: 'cheating-daddy',
-                productName: 'Cheating Daddy',
-                shortcutName: 'Cheating Daddy',
+                name: 'kaite',
+                productName: 'KAITE',
+                shortcutName: 'KAITE',
                 createDesktopShortcut: true,
                 createStartMenuShortcut: true,
             },
@@ -48,13 +48,13 @@ module.exports = {
             platforms: ['linux'],
             config: {
                 options: {
-                    name: 'Cheating Daddy',
-                    productName: 'Cheating Daddy',
+                    name: 'KAITE',
+                    productName: 'KAITE',
                     genericName: 'AI Assistant',
-                    description: 'AI assistant for interviews and learning',
+                    description: 'KAITE - AI-powered real-time assistant',
                     categories: ['Development', 'Education'],
-                    icon: 'src/assets/logo.png'
-                }
+                    icon: 'src/assets/logo.png',
+                },
             },
         },
     ],
