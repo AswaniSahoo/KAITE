@@ -957,6 +957,27 @@ async function sendImageWithFailover(base64Data, prompt) {
                 }
             }
 
+            // Local Ollama model-level failover: when main model OOMs or 500s, try lighter models
+            if (
+                step.provider === 'ollama' &&
+                (error.message.includes('500') || error.message.includes('memory') || error.message.includes('not found'))
+            ) {
+                const otherModels = providerConfig.models.filter(m => m.vision && m.id !== visionModel);
+                for (const alt of otherModels) {
+                    try {
+                        console.log(`[Image] Ollama ${visionModel} failed, trying lighter: ${alt.id}...`);
+                        sendToRenderer('update-status', `Switching to ${alt.name}...`);
+                        const altResult = await sendImageViaOllama(base64Data, prompt, alt.id);
+                        if (altResult && altResult.success) {
+                            saveScreenAnalysis(prompt, altResult.text, `ollama/${alt.id}`);
+                            return altResult;
+                        }
+                    } catch (altError) {
+                        console.error(`[Image] ollama/${alt.id} also failed: ${altError.message}`);
+                    }
+                }
+            }
+
             if (isLast) {
                 sendToRenderer('update-status', 'All image providers failed');
                 return { success: false, error: `All providers failed. Last: ${error.message}` };

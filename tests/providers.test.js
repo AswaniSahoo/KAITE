@@ -101,6 +101,15 @@ test('Ollama has gemma4 as default', () => {
     assertEqual(PROVIDERS.ollama.defaultModel, 'gemma4:latest', 'Ollama default model');
 });
 
+test('Ollama has gemma4:e2b as lightweight fallback', () => {
+    const models = PROVIDERS.ollama.models;
+    assert(
+        models.some(m => m.id === 'gemma4:e2b'),
+        'Missing gemma4:e2b lightweight fallback'
+    );
+    assert(models.length >= 3, `Expected at least 3 Ollama models, got ${models.length}`);
+});
+
 test('Ollama Cloud has qwen3.5:cloud as default', () => {
     assertEqual(PROVIDERS.ollamaCloud.defaultModel, 'qwen3.5:cloud', 'Ollama Cloud default model');
 });

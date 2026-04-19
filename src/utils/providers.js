@@ -70,6 +70,7 @@ const PROVIDERS = {
         keyField: null, // no API key needed
         models: [
             { id: 'gemma4:latest', name: 'Gemma 4 (9.6GB, Vision)', contextWindow: 131072, speed: 'medium', vision: true },
+            { id: 'gemma4:e2b', name: 'Gemma 4 E2B (Lite, Vision)', contextWindow: 131072, speed: 'fast', vision: true },
             { id: 'gemma3:12b', name: 'Gemma 3 12B (Vision)', contextWindow: 131072, speed: 'medium', vision: true },
         ],
         defaultModel: 'gemma4:latest',
