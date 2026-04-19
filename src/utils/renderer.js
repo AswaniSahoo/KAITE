@@ -216,10 +216,21 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
 
     // Refresh preferences cache
     await loadPreferencesCache();
-    const audioMode = preferencesCache.audioMode || 'speaker_only';
+    const audioMode = preferencesCache.audioMode || 'screen_only';
 
     try {
-        if (isMacOS) {
+        if (audioMode === 'screen_only') {
+            // Screen-only mode: no audio capture at all, lightweight
+            mediaStream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    frameRate: 1,
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 },
+                },
+                audio: false,
+            });
+            console.log('Screen-only capture started (no audio)');
+        } else if (isMacOS) {
             // On macOS, use SystemAudioDump for audio and getDisplayMedia for screen
             console.log('Starting macOS capture with SystemAudioDump...');
 

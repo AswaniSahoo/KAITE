@@ -37,7 +37,8 @@ function createWindow(sendToRenderer, geminiSessionRef) {
         { useSystemPicker: true }
     );
 
-    mainWindow.setResizable(false);
+    mainWindow.setResizable(true);
+    mainWindow.setMinimumSize(400, 300);
     mainWindow.setContentProtection(true);
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 

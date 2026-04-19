@@ -1,7 +1,7 @@
 {
     "name": "kaite",
     "productName": "KAITE",
-    "version": "0.8.0",
+    "version": "0.8.1",
     "description": "KAITE - AI-powered real-time assistant",
     "main": "src/index.js",
     "scripts": {
