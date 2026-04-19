@@ -47,13 +47,16 @@ function assertEqual(actual, expected, message) {
 // ────────────────────────────────────────────────────────────────────────────
 console.log('\n=== Provider Registry Tests ===\n');
 
-test('All 4 providers exist in registry', () => {
+test('All 3 providers exist in registry', () => {
     const providers = Object.keys(PROVIDERS);
-    assert(providers.includes('groq'), 'Missing groq');
-    assert(providers.includes('openrouter'), 'Missing openrouter');
     assert(providers.includes('gemini'), 'Missing gemini');
+    assert(providers.includes('openrouter'), 'Missing openrouter');
     assert(providers.includes('ollama'), 'Missing ollama');
-    assertEqual(providers.length, 4, 'Provider count');
+    assertEqual(providers.length, 3, 'Provider count');
+});
+
+test('Groq is removed from providers', () => {
+    assert(!PROVIDERS.groq, 'Groq should not exist in registry');
 });
 
 test('Every provider has at least 1 model', () => {
@@ -69,32 +72,45 @@ test('Every provider has a valid defaultModel', () => {
     }
 });
 
-test('OpenRouter has free models (GPT-OSS, MiniMax, Gemma 4)', () => {
-    const freeModels = PROVIDERS.openrouter.models.filter(m => m.id.includes(':free'));
-    assert(freeModels.length >= 3, `Expected at least 3 free models, got ${freeModels.length}`);
+test('OpenRouter has free vision models (Gemma 4)', () => {
+    const freeVision = PROVIDERS.openrouter.models.filter(m => m.id.includes(':free') && m.vision);
+    assert(freeVision.length >= 2, `Expected at least 2 free vision models, got ${freeVision.length}`);
 });
 
-test('OpenRouter has Kimi K2.5 model', () => {
-    const kimi = PROVIDERS.openrouter.models.find(m => m.id.includes('kimi'));
-    assert(kimi, 'Kimi model not found in OpenRouter');
+test('Gemini has thinking-capable models (2.5 Flash, 2.5 Pro, 3.1 Pro)', () => {
+    const models = PROVIDERS.gemini.models;
+    assert(models.length >= 3, `Expected at least 3 Gemini models, got ${models.length}`);
+    assert(
+        models.some(m => m.id.includes('2.5-flash')),
+        'Missing 2.5 Flash'
+    );
+    assert(
+        models.some(m => m.id.includes('2.5-pro')),
+        'Missing 2.5 Pro'
+    );
+    assert(
+        models.some(m => m.id.includes('3.1-pro')),
+        'Missing 3.1 Pro'
+    );
 });
 
-test('OpenRouter has MiniMax models', () => {
-    const minimax = PROVIDERS.openrouter.models.filter(m => m.id.includes('minimax'));
-    assert(minimax.length >= 2, `Expected at least 2 MiniMax models, got ${minimax.length}`);
+test('All Gemini models have vision', () => {
+    const nonVision = PROVIDERS.gemini.models.filter(m => !m.vision);
+    assertEqual(nonVision.length, 0, 'All Gemini models should have vision');
 });
 
 test('Ollama has gemma4 as default', () => {
     assertEqual(PROVIDERS.ollama.defaultModel, 'gemma4:latest', 'Ollama default model');
 });
 
-test('All models have required fields', () => {
+test('All models have required fields (id, name, contextWindow, speed, vision)', () => {
     for (const [provName, config] of Object.entries(PROVIDERS)) {
         for (const model of config.models) {
             assert(model.id, `${provName} model missing id`);
             assert(model.name, `${provName} model ${model.id} missing name`);
             assert(model.contextWindow > 0, `${provName} model ${model.id} invalid contextWindow`);
             assert(['fastest', 'fast', 'medium', 'slow'].includes(model.speed), `${provName} model ${model.id} invalid speed "${model.speed}"`);
+            assert(typeof model.vision === 'boolean', `${provName} model ${model.id} missing vision flag`);
         }
     }
 });
@@ -104,7 +120,6 @@ console.log('\n=== Failover Chain Tests ===\n');
 
 test('Primary appears first in chain', () => {
     const chain = buildFailoverChain('openrouter', 'anthropic/claude-sonnet-4', {
-        groq: 'gsk_test',
         openrouter: 'sk-test',
         gemini: 'AIza_test',
     });
@@ -113,8 +128,7 @@ test('Primary appears first in chain', () => {
 });
 
 test('Ollama always last in chain', () => {
-    const chain = buildFailoverChain('groq', 'qwen-qwq-32b', {
-        groq: 'gsk_test',
+    const chain = buildFailoverChain('gemini', 'gemini-2.5-flash', {
         openrouter: 'sk-test',
         gemini: 'AIza_test',
     });
@@ -124,7 +138,6 @@ test('Ollama always last in chain', () => {
 
 test('No duplicate providers in chain', () => {
     const chain = buildFailoverChain('openrouter', 'anthropic/claude-sonnet-4', {
-        groq: 'gsk_test',
         openrouter: 'sk-test',
         gemini: 'AIza_test',
     });
@@ -135,12 +148,10 @@ test('No duplicate providers in chain', () => {
 
 test('Providers without API keys are excluded (except ollama)', () => {
     const chain = buildFailoverChain('openrouter', 'anthropic/claude-sonnet-4', {
-        groq: '', // empty key
         openrouter: 'sk-test',
         gemini: '', // empty key
     });
     const providers = chain.map(c => c.provider);
-    assert(!providers.includes('groq'), 'Groq should be excluded (empty key)');
     assert(!providers.includes('gemini'), 'Gemini should be excluded (empty key)');
     assert(providers.includes('ollama'), 'Ollama should always be included');
     assert(providers.includes('openrouter'), 'OpenRouter should be included (has key)');
@@ -154,7 +165,6 @@ test('Chain works with no API keys at all (only ollama)', () => {
 
 test('Ollama as primary works', () => {
     const chain = buildFailoverChain('ollama', 'gemma4:latest', {
-        groq: 'gsk_test',
         openrouter: 'sk-test',
     });
     assertEqual(chain[0].provider, 'ollama', 'Ollama should be first');
@@ -164,9 +174,18 @@ test('Ollama as primary works', () => {
 test('Gemini as primary uses SDK path', () => {
     const chain = buildFailoverChain('gemini', 'gemini-2.5-flash', {
         gemini: 'AIza_test',
-        groq: 'gsk_test',
     });
     assertEqual(chain[0].provider, 'gemini', 'Gemini should be first');
+});
+
+test('Failover order: Gemini -> OpenRouter -> Ollama', () => {
+    const chain = buildFailoverChain('gemini', 'gemini-2.5-flash', {
+        gemini: 'AIza_test',
+        openrouter: 'sk-test',
+    });
+    assertEqual(chain[0].provider, 'gemini', 'First: Gemini');
+    assertEqual(chain[1].provider, 'openrouter', 'Second: OpenRouter');
+    assertEqual(chain[2].provider, 'ollama', 'Third: Ollama');
 });
 
 // ────────────────────────────────────────────────────────────────────────────

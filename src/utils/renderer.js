@@ -565,10 +565,26 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
     );
 }
 
-const MANUAL_SCREENSHOT_PROMPT = `Help me on this page, give me the answer no bs, complete answer.
-So if its a code question, give me the approach in few bullet points, then the entire code. Also if theres anything else i need to know, tell me.
-If its a question about the website, give me the answer no bs, complete answer.
-If its a mcq question, give me the answer no bs, complete answer.`;
+const MANUAL_SCREENSHOT_PROMPT = `Analyze this screen capture. Determine the type of content and respond accordingly:
+
+**IF CODING PROBLEM (LeetCode, HackerRank, etc.):**
+Give ONLY the complete, ready-to-submit solution code in a single code block. No explanation before or after. No approach, no complexity analysis, no examples.
+
+**IF MCQ / MULTIPLE CHOICE:**
+Format: "X) answer text" where X is the option letter. One line per question. Nothing else.
+
+**IF TECHNICAL / THEORY QUESTION:**
+Direct answer only, 1-3 lines max. No preamble.
+
+**IF WEBSITE / UI / GENERAL:**
+Describe only what is asked about. Stay under 3 lines.
+
+OUTPUT RULES:
+- No markdown headers (no ## or ###)
+- No "Here's", "Let me", "The answer is", or similar filler
+- No step-by-step breakdowns
+- No time/space complexity unless explicitly asked
+- Start your response with the actual answer immediately`;
 
 async function captureManualScreenshot(imageQuality = null) {
     console.log('Manual screenshot triggered');

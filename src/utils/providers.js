@@ -3,13 +3,12 @@
  *
  * Strategy: Try the primary provider/model. If it fails (timeout, billing,
  * server error, anything), automatically cascade to the next provider in
- * the failover chain. The chain is ordered by quality and speed:
+ * the failover chain. The chain is ordered by quality and reliability:
  *
  *   1. Primary (user-selected or auto-detected)
- *   2. Groq (free, fastest)
- *   3. OpenRouter (paid, best models)
- *   4. Gemini (Google SDK)
- *   5. Local Ollama (offline fallback, never fails on billing)
+ *   2. Gemini (Google SDK, free tier, vision + thinking)
+ *   3. OpenRouter (free Gemma 4 models, paid premium)
+ *   4. Local Ollama (offline fallback, never fails on billing)
  *
  * Every individual provider call gets:
  *   - AbortController timeout (30s cloud, 60s local)
@@ -24,62 +23,41 @@ const { GoogleGenAI } = require('@google/genai');
 // The first model in each list is the default (best bang for buck).
 
 const PROVIDERS = {
-    groq: {
-        name: 'Groq',
-        baseUrl: 'https://api.groq.com/openai/v1/chat/completions',
-        keyField: 'groqApiKey',
+    gemini: {
+        name: 'Gemini (Google)',
+        baseUrl: null, // uses SDK, not raw HTTP
+        keyField: 'geminiApiKey',
         models: [
-            { id: 'qwen/qwen3-32b', name: 'Qwen 3 32B', contextWindow: 131072, speed: 'fast' },
-            { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', contextWindow: 131072, speed: 'fast' },
-            { id: 'meta-llama/llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B', contextWindow: 131072, speed: 'fast' },
-            { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B', contextWindow: 131072, speed: 'fastest' },
+            // All free (15 RPM on free tier), all have vision + thinking
+            { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Free)', contextWindow: 1048576, speed: 'fast', vision: true },
+            { id: 'gemini-2.5-pro-preview-05-06', name: 'Gemini 2.5 Pro (Free)', contextWindow: 1048576, speed: 'medium', vision: true },
+            { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Free)', contextWindow: 1048576, speed: 'medium', vision: true },
         ],
-        defaultModel: 'qwen/qwen3-32b',
+        defaultModel: 'gemini-2.5-flash',
     },
     openrouter: {
         name: 'OpenRouter',
         baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
         keyField: 'openrouterApiKey',
         models: [
-            // Free models (no credits needed)
-            { id: 'openai/gpt-oss-120b:free', name: 'GPT-OSS 120B (Free)', contextWindow: 131072, speed: 'fast' },
-            { id: 'openai/gpt-oss-20b:free', name: 'GPT-OSS 20B (Free)', contextWindow: 131072, speed: 'fastest' },
-            { id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (Free)', contextWindow: 131072, speed: 'fast' },
-            { id: 'minimax/minimax-m2.5:free', name: 'MiniMax M2.5 (Free)', contextWindow: 1048576, speed: 'fast' },
-            // Premium models
-            { id: 'google/gemini-2.5-flash-preview', name: 'Gemini 2.5 Flash', contextWindow: 1048576, speed: 'fast' },
-            { id: 'google/gemini-2.5-pro-preview', name: 'Gemini 2.5 Pro', contextWindow: 1048576, speed: 'medium' },
-            { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', contextWindow: 200000, speed: 'medium' },
-            { id: 'moonshot/kimi-k2.5', name: 'Kimi K2.5 (256K)', contextWindow: 262144, speed: 'medium' },
-            { id: 'minimax/minimax-m2.7', name: 'MiniMax M2.7', contextWindow: 1048576, speed: 'medium' },
-            { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1', contextWindow: 163840, speed: 'medium' },
-            { id: 'openai/gpt-4.1-mini', name: 'GPT-4.1 Mini', contextWindow: 1047576, speed: 'fast' },
-            { id: 'openai/gpt-4.1', name: 'GPT-4.1', contextWindow: 1047576, speed: 'medium' },
-            { id: 'mistralai/mistral-medium-3', name: 'Mistral Medium 3', contextWindow: 131072, speed: 'fast' },
-            { id: 'qwen/qwen3-235b-a22b', name: 'Qwen 3 235B', contextWindow: 131072, speed: 'medium' },
+            // Free vision models (no credits needed, best for screen analysis)
+            { id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (Free, Vision)', contextWindow: 262144, speed: 'fast', vision: true },
+            { id: 'google/gemma-4-27b-a4b-it:free', name: 'Gemma 4 26B MoE (Free, Fast)', contextWindow: 262144, speed: 'fastest', vision: true },
+            // Premium vision + thinking models (accurate, reliable)
+            { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4 (Paid)', contextWindow: 200000, speed: 'medium', vision: true },
+            { id: 'google/gemini-2.5-flash-preview', name: 'Gemini 2.5 Flash (Paid)', contextWindow: 1048576, speed: 'fast', vision: true },
+            { id: 'openai/gpt-4.1-mini', name: 'GPT-4.1 Mini (Paid)', contextWindow: 1047576, speed: 'fast', vision: true },
+            { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (Thinking)', contextWindow: 163840, speed: 'medium', vision: false },
         ],
-        defaultModel: 'openai/gpt-oss-120b:free',
-    },
-    gemini: {
-        name: 'Gemini (Google)',
-        baseUrl: null, // uses SDK, not raw HTTP
-        keyField: 'geminiApiKey',
-        models: [
-            { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1048576, speed: 'fast' },
-            { id: 'gemini-2.5-pro-preview-05-06', name: 'Gemini 2.5 Pro', contextWindow: 1048576, speed: 'medium' },
-            { id: 'gemma-3-27b-it', name: 'Gemma 3 27B', contextWindow: 131072, speed: 'medium' },
-        ],
-        defaultModel: 'gemini-2.5-flash',
+        defaultModel: 'google/gemma-4-31b-it:free',
     },
     ollama: {
         name: 'Ollama (Local)',
         baseUrl: null, // resolved at runtime from preferences
         keyField: null, // no API key needed
         models: [
-            { id: 'gemma4:latest', name: 'Gemma 4 (9.6GB)', contextWindow: 131072, speed: 'medium' },
-            { id: 'gemma3:4b', name: 'Gemma 3 4B', contextWindow: 131072, speed: 'fast' },
-            { id: 'gemma3:12b', name: 'Gemma 3 12B', contextWindow: 131072, speed: 'medium' },
-            { id: 'llama3.1', name: 'Llama 3.1', contextWindow: 131072, speed: 'medium' },
+            { id: 'gemma4:latest', name: 'Gemma 4 (9.6GB, Vision)', contextWindow: 131072, speed: 'medium', vision: true },
+            { id: 'gemma3:12b', name: 'Gemma 3 12B (Vision)', contextWindow: 131072, speed: 'medium', vision: true },
         ],
         defaultModel: 'gemma4:latest',
     },
@@ -450,11 +428,10 @@ async function callSingleProvider(provider, model, apiKey, messages, systemPromp
 function buildFailoverChain(primaryProvider, primaryModel, apiKeys, ollamaHost) {
     const chain = [];
 
-    // Priority order for failover (uses registry defaults)
+    // Priority order for failover (Gemini first = free + reliable)
     const providerOrder = [
-        { key: 'groq', model: PROVIDERS.groq.defaultModel },
-        { key: 'openrouter', model: PROVIDERS.openrouter.defaultModel },
         { key: 'gemini', model: PROVIDERS.gemini.defaultModel },
+        { key: 'openrouter', model: PROVIDERS.openrouter.defaultModel },
         { key: 'ollama', model: PROVIDERS.ollama.defaultModel },
     ];
 
@@ -527,7 +504,6 @@ async function sendToProvider(transcription, opts) {
 
     // Build failover chain
     const allKeys = apiKeys || {
-        groq: '',
         openrouter: '',
         gemini: '',
         [primaryProvider]: primaryApiKey || '',

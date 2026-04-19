@@ -880,26 +880,42 @@ async function sendImageWithFailover(base64Data, prompt) {
         const step = chain[i];
         const isLast = i === chain.length - 1;
 
+        // Find the best vision-capable model for this provider
+        const providerConfig = PROVIDERS[step.provider];
+        const selectedModel = providerConfig?.models?.find(m => m.id === step.model);
+        let visionModel = step.model;
+
+        if (selectedModel && !selectedModel.vision) {
+            // User's model doesn't support vision, find one that does
+            const visionFallback = providerConfig.models.find(m => m.vision);
+            if (!visionFallback) {
+                console.log(`[Image] Skipping ${step.provider} (no vision models)`);
+                continue;
+            }
+            visionModel = visionFallback.id;
+            console.log(`[Image] ${step.model} has no vision, swapping to ${visionModel}`);
+        }
+
         try {
-            console.log(`[Image] Trying ${step.provider}/${step.model}...`);
-            sendToRenderer('update-status', `Analyzing with ${step.provider}/${step.model}...`);
+            console.log(`[Image] Trying ${step.provider}/${visionModel}...`);
+            sendToRenderer('update-status', `Analyzing with ${step.provider}/${visionModel}...`);
 
             let result;
             if (step.provider === 'gemini') {
-                result = await sendImageViaGeminiSDK(base64Data, prompt, step.model, step.apiKey);
+                result = await sendImageViaGeminiSDK(base64Data, prompt, visionModel, step.apiKey);
             } else if (step.provider === 'openrouter' || step.provider === 'groq') {
-                result = await sendImageViaOpenAI(base64Data, prompt, step.model, step.apiKey, step.provider);
+                result = await sendImageViaOpenAI(base64Data, prompt, visionModel, step.apiKey, step.provider);
             } else if (step.provider === 'ollama') {
-                result = await sendImageViaOllama(base64Data, prompt, step.model);
+                result = await sendImageViaOllama(base64Data, prompt, visionModel);
             }
 
             if (result && result.success) {
-                saveScreenAnalysis(prompt, result.text, `${step.provider}/${step.model}`);
+                saveScreenAnalysis(prompt, result.text, `${step.provider}/${visionModel}`);
                 return result;
             }
             throw new Error(result?.error || 'Unknown image analysis error');
         } catch (error) {
-            console.error(`[Image] ${step.provider}/${step.model} failed: ${error.message}`);
+            console.error(`[Image] ${step.provider}/${visionModel} failed: ${error.message}`);
             if (isLast) {
                 sendToRenderer('update-status', 'All image providers failed');
                 return { success: false, error: `All providers failed. Last: ${error.message}` };
