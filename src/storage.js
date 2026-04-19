@@ -245,6 +245,10 @@ function getOpenrouterApiKey() {
     return getCredentials().openrouterApiKey || process.env.OPENROUTER_API_KEY || '';
 }
 
+function getOllamaCloudApiKey() {
+    return getCredentials().ollamaApiKey || process.env.OLLAMA_API_KEY || '';
+}
+
 // ============ PREFERENCES ============
 
 function getPreferences() {
@@ -545,6 +549,7 @@ module.exports = {
     getGroqApiKey,
     setGroqApiKey,
     getOpenrouterApiKey,
+    getOllamaCloudApiKey,
 
     // Preferences
     getPreferences,

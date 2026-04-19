@@ -8,7 +8,8 @@
  *   1. Primary (user-selected or auto-detected)
  *   2. Gemini (Google SDK, free tier, vision + thinking)
  *   3. OpenRouter (free Gemma 4 models, paid premium)
- *   4. Local Ollama (offline fallback, never fails on billing)
+ *   4. Ollama Cloud (free tier, Qwen 3.5 + Gemma 4 cloud)
+ *   5. Local Ollama (offline fallback, never fails on billing)
  *
  * Every individual provider call gets:
  *   - AbortController timeout (30s cloud, 60s local)
@@ -50,6 +51,18 @@ const PROVIDERS = {
             { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (Thinking)', contextWindow: 163840, speed: 'medium', vision: false },
         ],
         defaultModel: 'google/gemma-4-31b-it:free',
+    },
+    ollamaCloud: {
+        name: 'Ollama Cloud',
+        baseUrl: 'https://ollama.com/api/chat',
+        keyField: 'ollamaApiKey',
+        models: [
+            // Free cloud models (vision + thinking, session limits reset every 5h)
+            { id: 'qwen3.5:cloud', name: 'Qwen 3.5 Cloud (Vision, Thinking)', contextWindow: 262144, speed: 'fast', vision: true },
+            { id: 'gemma4:31b-cloud', name: 'Gemma 4 31B Cloud (Vision)', contextWindow: 131072, speed: 'fast', vision: true },
+            { id: 'kimi-k2.5:cloud', name: 'Kimi K2.5 Cloud (Vision, Thinking)', contextWindow: 262144, speed: 'medium', vision: true },
+        ],
+        defaultModel: 'qwen3.5:cloud',
     },
     ollama: {
         name: 'Ollama (Local)',
@@ -285,20 +298,26 @@ async function streamGeminiSDK({ apiKey, model, messages, systemPrompt, onToken,
     return null;
 }
 
-// ── Ollama Local Streaming ────────────────────────────────────────────────
+// ── Ollama Streaming (Local + Cloud) ──────────────────────────────────────
 
-async function streamOllama({ host, model, messages, onToken, onDone, onError }) {
-    const baseUrl = `${host || 'http://127.0.0.1:11434'}/api/chat`;
+async function streamOllama({ host, model, messages, onToken, onDone, onError, apiKey, timeoutMs }) {
+    const baseUrl = host ? `${host}/api/chat` : 'http://127.0.0.1:11434/api/chat';
+    const timeout = timeoutMs || LOCAL_TIMEOUT_MS;
     let lastError = null;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), LOCAL_TIMEOUT_MS);
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
 
         try {
+            const headers = { 'Content-Type': 'application/json' };
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+
             const response = await fetch(baseUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({
                     model,
                     messages,
@@ -353,8 +372,9 @@ async function streamOllama({ host, model, messages, onToken, onDone, onError })
             lastError = error;
 
             const isTimeout = error.name === 'AbortError';
-            const errorMsg = isTimeout ? `Ollama timed out (${LOCAL_TIMEOUT_MS / 1000}s)` : error.message;
-            console.error(`[Ollama] Attempt ${attempt}/${MAX_RETRIES} failed: ${errorMsg}`);
+            const label = apiKey ? 'Ollama Cloud' : 'Ollama';
+            const errorMsg = isTimeout ? `${label} timed out (${timeout / 1000}s)` : error.message;
+            console.error(`[${label}] Attempt ${attempt}/${MAX_RETRIES} failed: ${errorMsg}`);
 
             if (attempt < MAX_RETRIES) {
                 await sleep(BASE_RETRY_DELAY_MS);
@@ -362,7 +382,8 @@ async function streamOllama({ host, model, messages, onToken, onDone, onError })
         }
     }
 
-    const finalError = `Ollama failed: ${lastError?.message || 'Unknown error'}`;
+    const label = apiKey ? 'Ollama Cloud' : 'Ollama';
+    const finalError = `${label} failed: ${lastError?.message || 'Unknown error'}`;
     console.error(finalError);
     onError(finalError);
     return null;
@@ -401,7 +422,20 @@ async function callSingleProvider(provider, model, apiKey, messages, systemPromp
         });
     }
 
-    // OpenAI-compatible (Groq, OpenRouter)
+    if (provider === 'ollamaCloud') {
+        return streamOllama({
+            host: 'https://ollama.com',
+            model,
+            messages,
+            onToken,
+            onDone,
+            onError,
+            apiKey,
+            timeoutMs: CLOUD_TIMEOUT_MS,
+        });
+    }
+
+    // OpenAI-compatible (OpenRouter)
     return streamOpenAICompatible({
         baseUrl: providerConfig.baseUrl,
         apiKey,
@@ -421,7 +455,7 @@ async function callSingleProvider(provider, model, apiKey, messages, systemPromp
  * others that have valid API keys, ending with local Ollama.
  *
  * @param {string} primaryProvider - User's selected provider
- * @param {object} apiKeys - { groq, openrouter, gemini } key strings
+ * @param {object} apiKeys - { openrouter, gemini, ollamaCloud } key strings
  * @param {string} ollamaHost - Ollama host URL
  * @returns {Array<{provider, model, apiKey}>} Ordered failover chain
  */
@@ -432,6 +466,7 @@ function buildFailoverChain(primaryProvider, primaryModel, apiKeys, ollamaHost) 
     const providerOrder = [
         { key: 'gemini', model: PROVIDERS.gemini.defaultModel },
         { key: 'openrouter', model: PROVIDERS.openrouter.defaultModel },
+        { key: 'ollamaCloud', model: PROVIDERS.ollamaCloud.defaultModel },
         { key: 'ollama', model: PROVIDERS.ollama.defaultModel },
     ];
 
@@ -487,7 +522,7 @@ async function sendToProvider(transcription, opts) {
         provider: primaryProvider,
         model: primaryModel,
         apiKey: primaryApiKey,
-        apiKeys, // { groq, openrouter, gemini }
+        apiKeys, // { openrouter, gemini, ollamaCloud }
         systemPrompt,
         conversationHistory,
         onToken,
@@ -506,6 +541,7 @@ async function sendToProvider(transcription, opts) {
     const allKeys = apiKeys || {
         openrouter: '',
         gemini: '',
+        ollamaCloud: '',
         [primaryProvider]: primaryApiKey || '',
     };
 

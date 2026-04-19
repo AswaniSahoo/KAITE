@@ -5,7 +5,8 @@
  * 1. Failover chain building (correct order, deduplication)
  * 2. Error classification (retryable vs non-retryable)
  * 3. Model registry completeness
- * 4. Ollama local model connectivity
+ * 4. Ollama Cloud model connectivity
+ * 5. Ollama local model connectivity
  * 5. Edge cases (empty keys, bad providers, etc.)
  *
  * Run: node tests/providers.test.js
@@ -47,12 +48,13 @@ function assertEqual(actual, expected, message) {
 // ────────────────────────────────────────────────────────────────────────────
 console.log('\n=== Provider Registry Tests ===\n');
 
-test('All 3 providers exist in registry', () => {
+test('All 4 providers exist in registry', () => {
     const providers = Object.keys(PROVIDERS);
     assert(providers.includes('gemini'), 'Missing gemini');
     assert(providers.includes('openrouter'), 'Missing openrouter');
+    assert(providers.includes('ollamaCloud'), 'Missing ollamaCloud');
     assert(providers.includes('ollama'), 'Missing ollama');
-    assertEqual(providers.length, 3, 'Provider count');
+    assertEqual(providers.length, 4, 'Provider count');
 });
 
 test('Groq is removed from providers', () => {
@@ -101,6 +103,24 @@ test('All Gemini models have vision', () => {
 
 test('Ollama has gemma4 as default', () => {
     assertEqual(PROVIDERS.ollama.defaultModel, 'gemma4:latest', 'Ollama default model');
+});
+
+test('Ollama Cloud has qwen3.5:cloud as default', () => {
+    assertEqual(PROVIDERS.ollamaCloud.defaultModel, 'qwen3.5:cloud', 'Ollama Cloud default model');
+});
+
+test('Ollama Cloud has vision-capable cloud models', () => {
+    const visionModels = PROVIDERS.ollamaCloud.models.filter(m => m.vision);
+    assert(visionModels.length >= 2, `Expected at least 2 vision models, got ${visionModels.length}`);
+    assert(
+        visionModels.some(m => m.id.includes('qwen3.5')),
+        'Missing Qwen 3.5 cloud model'
+    );
+});
+
+test('Ollama Cloud requires API key (has keyField)', () => {
+    assertEqual(PROVIDERS.ollamaCloud.keyField, 'ollamaApiKey', 'Ollama Cloud keyField');
+    assertEqual(PROVIDERS.ollamaCloud.baseUrl, 'https://ollama.com/api/chat', 'Ollama Cloud baseUrl');
 });
 
 test('All models have required fields (id, name, contextWindow, speed, vision)', () => {
@@ -178,14 +198,27 @@ test('Gemini as primary uses SDK path', () => {
     assertEqual(chain[0].provider, 'gemini', 'Gemini should be first');
 });
 
-test('Failover order: Gemini -> OpenRouter -> Ollama', () => {
+test('Failover order: Gemini -> OpenRouter -> Ollama Cloud -> Ollama', () => {
     const chain = buildFailoverChain('gemini', 'gemini-2.5-flash', {
         gemini: 'AIza_test',
         openrouter: 'sk-test',
+        ollamaCloud: 'ollama_test',
     });
     assertEqual(chain[0].provider, 'gemini', 'First: Gemini');
     assertEqual(chain[1].provider, 'openrouter', 'Second: OpenRouter');
-    assertEqual(chain[2].provider, 'ollama', 'Third: Ollama');
+    assertEqual(chain[2].provider, 'ollamaCloud', 'Third: Ollama Cloud');
+    assertEqual(chain[3].provider, 'ollama', 'Fourth: Ollama');
+});
+
+test('Ollama Cloud excluded when no API key', () => {
+    const chain = buildFailoverChain('gemini', 'gemini-2.5-flash', {
+        gemini: 'AIza_test',
+        openrouter: 'sk-test',
+        ollamaCloud: '', // empty key
+    });
+    const providers = chain.map(c => c.provider);
+    assert(!providers.includes('ollamaCloud'), 'Ollama Cloud should be excluded (empty key)');
+    assert(providers.includes('ollama'), 'Local Ollama still included');
 });
 
 // ────────────────────────────────────────────────────────────────────────────

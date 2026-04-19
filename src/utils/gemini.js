@@ -9,6 +9,7 @@ const {
     getApiKey,
     getGroqApiKey,
     getOpenrouterApiKey,
+    getOllamaCloudApiKey,
     incrementCharUsage,
     getModelForToday,
     getPreferences,
@@ -230,19 +231,19 @@ async function dispatchToTextProvider(transcription) {
 
     // Gather ALL API keys for the failover chain
     const apiKeys = {
-        groq: getGroqApiKey(),
-        openrouter: getOpenrouterApiKey(),
         gemini: getApiKey(),
+        openrouter: getOpenrouterApiKey(),
+        ollamaCloud: getOllamaCloudApiKey(),
     };
 
     // Auto-detect primary if not explicitly set
     if (!provider) {
-        if (apiKeys.groq) {
-            provider = 'groq';
+        if (apiKeys.gemini) {
+            provider = 'gemini';
         } else if (apiKeys.openrouter) {
             provider = 'openrouter';
-        } else if (apiKeys.gemini) {
-            provider = 'gemini';
+        } else if (apiKeys.ollamaCloud) {
+            provider = 'ollamaCloud';
         } else {
             // Last resort: try local Ollama
             provider = 'ollama';
@@ -869,9 +870,9 @@ async function sendImageWithFailover(base64Data, prompt) {
     const model = prefs.textModel || 'gemini-2.5-flash';
 
     const apiKeys = {
-        groq: getGroqApiKey() || '',
         openrouter: getOpenrouterApiKey() || '',
         gemini: getApiKey() || '',
+        ollamaCloud: getOllamaCloudApiKey() || '',
     };
 
     const chain = buildFailoverChain(provider, model, apiKeys);
@@ -903,8 +904,10 @@ async function sendImageWithFailover(base64Data, prompt) {
             let result;
             if (step.provider === 'gemini') {
                 result = await sendImageViaGeminiSDK(base64Data, prompt, visionModel, step.apiKey);
-            } else if (step.provider === 'openrouter' || step.provider === 'groq') {
+            } else if (step.provider === 'openrouter') {
                 result = await sendImageViaOpenAI(base64Data, prompt, visionModel, step.apiKey, step.provider);
+            } else if (step.provider === 'ollamaCloud') {
+                result = await sendImageViaOllamaCloud(base64Data, prompt, visionModel, step.apiKey);
             } else if (step.provider === 'ollama') {
                 result = await sendImageViaOllama(base64Data, prompt, visionModel);
             }
@@ -1083,6 +1086,59 @@ async function sendImageViaOllama(base64Data, prompt, model) {
 
     if (!fullText) throw new Error('Empty response from Ollama vision');
     console.log(`Image response completed from ollama/${model}`);
+    return { success: true, text: fullText, model };
+}
+
+// Ollama Cloud vision (same API format as local, different host + auth)
+async function sendImageViaOllamaCloud(base64Data, prompt, model, apiKey) {
+    const timeoutMs = CLOUD_TIMEOUT_MS || 30000;
+    const cloudUrl = 'https://ollama.com/api/generate';
+
+    const response = await fetch(cloudUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+            model,
+            prompt,
+            images: [base64Data],
+            stream: true,
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!response.ok) throw new Error(`Ollama Cloud HTTP ${response.status}`);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let isFirst = true;
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+        for (const line of lines) {
+            try {
+                const parsed = JSON.parse(line);
+                if (parsed.response) {
+                    fullText += parsed.response;
+                    sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
+                    isFirst = false;
+                }
+            } catch {
+                // skip malformed chunks
+            }
+        }
+    }
+
+    if (!fullText) throw new Error('Empty response from Ollama Cloud vision');
+    console.log(`Image response completed from ollamaCloud/${model}`);
     return { success: true, text: fullText, model };
 }
 
