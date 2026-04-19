@@ -29,10 +29,10 @@ const PROVIDERS = {
         baseUrl: null, // uses SDK, not raw HTTP
         keyField: 'geminiApiKey',
         models: [
-            // All free (15 RPM on free tier), all have vision + thinking
+            // Free Flash models only (Pro is now paid-only since Apr 2026)
+            // Each model has its own daily quota, so we list two for failover
             { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Free)', contextWindow: 1048576, speed: 'fast', vision: true },
-            { id: 'gemini-2.5-pro-preview-05-06', name: 'Gemini 2.5 Pro (Free)', contextWindow: 1048576, speed: 'medium', vision: true },
-            { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Free)', contextWindow: 1048576, speed: 'medium', vision: true },
+            { id: 'gemini-2.5-flash-lite-preview', name: 'Gemini 2.5 Flash Lite (Free)', contextWindow: 1048576, speed: 'fastest', vision: true },
         ],
         defaultModel: 'gemini-2.5-flash',
     },
@@ -41,14 +41,14 @@ const PROVIDERS = {
         baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
         keyField: 'openrouterApiKey',
         models: [
-            // Free vision models (no credits needed, best for screen analysis)
+            // Free vision models (no credits needed, reliable quality)
             { id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (Free, Vision)', contextWindow: 262144, speed: 'fast', vision: true },
             { id: 'google/gemma-4-27b-a4b-it:free', name: 'Gemma 4 26B MoE (Free, Fast)', contextWindow: 262144, speed: 'fastest', vision: true },
-            // Premium vision + thinking models (accurate, reliable)
+            // Paid premium models (needs credits, highest accuracy)
             { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4 (Paid)', contextWindow: 200000, speed: 'medium', vision: true },
+            { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet (Paid)', contextWindow: 200000, speed: 'medium', vision: true },
             { id: 'google/gemini-2.5-flash-preview', name: 'Gemini 2.5 Flash (Paid)', contextWindow: 1048576, speed: 'fast', vision: true },
             { id: 'openai/gpt-4.1-mini', name: 'GPT-4.1 Mini (Paid)', contextWindow: 1047576, speed: 'fast', vision: true },
-            { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (Thinking)', contextWindow: 163840, speed: 'medium', vision: false },
         ],
         defaultModel: 'google/gemma-4-31b-it:free',
     },
@@ -79,6 +79,7 @@ const PROVIDERS = {
 // ── Timeout + Retry Configuration ──────────────────────────────────────────
 
 const CLOUD_TIMEOUT_MS = 30000; // 30 seconds for cloud APIs
+const OLLAMA_CLOUD_TIMEOUT_MS = 45000; // 45 seconds for Ollama Cloud (slower)
 const LOCAL_TIMEOUT_MS = 60000; // 60 seconds for local Ollama (slower)
 const MAX_RETRIES = 2; // 2 attempts per provider, then cascade
 const BASE_RETRY_DELAY_MS = 1000;
@@ -135,6 +136,7 @@ async function streamOpenAICompatible({ baseUrl, apiKey, model, messages, onToke
                 headers['X-Title'] = 'KAITE';
             }
 
+            const isFreeModel = model.includes(':free');
             const response = await fetch(baseUrl, {
                 method: 'POST',
                 headers,
@@ -143,7 +145,7 @@ async function streamOpenAICompatible({ baseUrl, apiKey, model, messages, onToke
                     messages,
                     stream: true,
                     temperature: 0.7,
-                    max_tokens: 4096,
+                    max_tokens: isFreeModel ? 4096 : 2048,
                 }),
                 signal: controller.signal,
             });
@@ -431,7 +433,7 @@ async function callSingleProvider(provider, model, apiKey, messages, systemPromp
             onDone,
             onError,
             apiKey,
-            timeoutMs: CLOUD_TIMEOUT_MS,
+            timeoutMs: OLLAMA_CLOUD_TIMEOUT_MS,
         });
     }
 
@@ -625,6 +627,7 @@ module.exports = {
     trimConversationHistory,
     stripThinkingTags,
     CLOUD_TIMEOUT_MS,
+    OLLAMA_CLOUD_TIMEOUT_MS,
     LOCAL_TIMEOUT_MS,
     MAX_RETRIES,
 };

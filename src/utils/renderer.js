@@ -579,7 +579,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
 const MANUAL_SCREENSHOT_PROMPT = `Analyze this screen capture. Determine the type of content and respond accordingly:
 
 **IF CODING PROBLEM (LeetCode, HackerRank, etc.):**
-Give ONLY the complete, ready-to-submit solution code in a single code block. No explanation before or after. No approach, no complexity analysis, no examples.
+CRITICAL: Read the EXACT problem title, number, description, constraints, and examples visible on screen. Do NOT confuse it with a similarly-named problem. If a code editor is visible with a function signature, your solution MUST use that EXACT function name and signature. Give ONLY the complete, ready-to-submit solution code in a single code block. No explanation before or after. No approach, no complexity analysis, no examples.
 
 **IF MCQ / MULTIPLE CHOICE:**
 Format: "X) answer text" where X is the option letter. One line per question. Nothing else.
@@ -632,8 +632,8 @@ async function captureManualScreenshot(imageQuality = null) {
         return;
     }
 
-    // Downscale to max 1280px wide for faster transfer — vision models don't need 4K
-    const MAX_WIDTH = 1280;
+    // Downscale to max 1920px wide for readable text — coding problems need clear details
+    const MAX_WIDTH = 1920;
     const srcW = hiddenVideo.videoWidth;
     const srcH = hiddenVideo.videoHeight;
     let destW = srcW;

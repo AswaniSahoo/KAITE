@@ -990,6 +990,23 @@ export class MainView extends LitElement {
             </div>
 
             <div class="form-group">
+                <div
+                    class="form-hint"
+                    style="background: var(--bg-elevated); padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--accent);"
+                >
+                    <strong>Local Fallback:</strong> Install
+                    <span class="link" @click=${() => this.onExternalLink('https://ollama.com/download')}>Ollama</span> and run
+                    <code style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-surface); padding: 1px 4px; border-radius: 3px;"
+                        >ollama serve</code
+                    >
+                    in a terminal for offline fallback. Pull a vision model first:
+                    <code style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-surface); padding: 1px 4px; border-radius: 3px;"
+                        >ollama pull gemma4:latest</code
+                    >
+                </div>
+            </div>
+
+            <div class="form-group">
                 <label class="form-label">Text Response Provider</label>
                 <select .value=${this._textProvider} @change=${e => this._saveTextProvider(e.target.value)}>
                     <option value="gemini" ?selected=${this._textProvider === 'gemini'}>Gemini (Free, Recommended)</option>
@@ -1041,7 +1058,17 @@ export class MainView extends LitElement {
                     .value=${this._ollamaHost}
                     @input=${e => this._saveOllamaHost(e.target.value)}
                 />
-                <div class="form-hint">Ollama must be running locally</div>
+                <div
+                    class="form-hint"
+                    style="background: var(--bg-elevated); padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--accent);"
+                >
+                    <strong>Setup:</strong> 1) Install
+                    <span class="link" @click=${() => this.onExternalLink('https://ollama.com/download')}>Ollama</span> 2) Open a terminal and run
+                    <code style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-surface); padding: 1px 4px; border-radius: 3px;"
+                        >ollama serve</code
+                    >
+                    3) Keep it running while using KAITE
+                </div>
             </div>
 
             <div class="form-group">

@@ -79,20 +79,16 @@ test('OpenRouter has free vision models (Gemma 4)', () => {
     assert(freeVision.length >= 2, `Expected at least 2 free vision models, got ${freeVision.length}`);
 });
 
-test('Gemini has thinking-capable models (2.5 Flash, 2.5 Pro, 3.1 Pro)', () => {
+test('Gemini has free Flash models (2.5 Flash, 2.5 Flash Lite)', () => {
     const models = PROVIDERS.gemini.models;
-    assert(models.length >= 3, `Expected at least 3 Gemini models, got ${models.length}`);
+    assert(models.length >= 2, `Expected at least 2 Gemini models, got ${models.length}`);
     assert(
-        models.some(m => m.id.includes('2.5-flash')),
+        models.some(m => m.id.includes('2.5-flash') && !m.id.includes('lite')),
         'Missing 2.5 Flash'
     );
     assert(
-        models.some(m => m.id.includes('2.5-pro')),
-        'Missing 2.5 Pro'
-    );
-    assert(
-        models.some(m => m.id.includes('3.1-pro')),
-        'Missing 3.1 Pro'
+        models.some(m => m.id.includes('flash-lite')),
+        'Missing 2.5 Flash Lite'
     );
 });
 

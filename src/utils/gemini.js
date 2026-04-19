@@ -919,6 +919,44 @@ async function sendImageWithFailover(base64Data, prompt) {
             throw new Error(result?.error || 'Unknown image analysis error');
         } catch (error) {
             console.error(`[Image] ${step.provider}/${visionModel} failed: ${error.message}`);
+
+            // Gemini model-level failover: try other models in the same provider
+            // Each Gemini model has its own daily quota, so flash-lite may still work
+            if (step.provider === 'gemini' && error.message.includes('429')) {
+                const otherModels = providerConfig.models.filter(m => m.vision && m.id !== visionModel);
+                for (const alt of otherModels) {
+                    try {
+                        console.log(`[Image] Gemini quota hit, trying alternate: ${alt.id}...`);
+                        sendToRenderer('update-status', `Quota hit, trying ${alt.name}...`);
+                        const altResult = await sendImageViaGeminiSDK(base64Data, prompt, alt.id, step.apiKey);
+                        if (altResult && altResult.success) {
+                            saveScreenAnalysis(prompt, altResult.text, `gemini/${alt.id}`);
+                            return altResult;
+                        }
+                    } catch (altError) {
+                        console.error(`[Image] gemini/${alt.id} also failed: ${altError.message}`);
+                    }
+                }
+            }
+
+            // OpenRouter model-level failover: when paid model 402s, try free models
+            if (step.provider === 'openrouter' && (error.message.includes('402') || error.message.includes('429'))) {
+                const freeModels = providerConfig.models.filter(m => m.vision && m.id !== visionModel && m.id.includes(':free'));
+                for (const alt of freeModels) {
+                    try {
+                        console.log(`[Image] OpenRouter credits exhausted, trying free: ${alt.id}...`);
+                        sendToRenderer('update-status', `Credits low, trying ${alt.name}...`);
+                        const altResult = await sendImageViaOpenAI(base64Data, prompt, alt.id, step.apiKey, 'openrouter');
+                        if (altResult && altResult.success) {
+                            saveScreenAnalysis(prompt, altResult.text, `openrouter/${alt.id}`);
+                            return altResult;
+                        }
+                    } catch (altError) {
+                        console.error(`[Image] openrouter/${alt.id} also failed: ${altError.message}`);
+                    }
+                }
+            }
+
             if (isLast) {
                 sendToRenderer('update-status', 'All image providers failed');
                 return { success: false, error: `All providers failed. Last: ${error.message}` };
@@ -987,7 +1025,7 @@ async function sendImageViaOpenAI(base64Data, prompt, model, apiKey, provider) {
             },
         ],
         stream: true,
-        max_tokens: 2048, // Cap tokens to avoid 402 on low-credit accounts
+        max_tokens: 2048,
     };
 
     const response = await fetch(baseUrl, {
@@ -1006,30 +1044,38 @@ async function sendImageViaOpenAI(base64Data, prompt, model, apiKey, provider) {
     const decoder = new TextDecoder();
     let fullText = '';
     let isFirst = true;
+    let leftover = ''; // Buffer for incomplete SSE lines across chunk boundaries
+    let streamDone = false;
 
-    while (true) {
+    while (!streamDone) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+        const chunk = leftover + decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        // Last element may be incomplete - save it for the next chunk
+        leftover = lines.pop() || '';
 
         for (const line of lines) {
-            if (line.startsWith('data: ')) {
-                const data = line.slice(6);
-                if (data === '[DONE]') break;
-                try {
-                    const parsed = JSON.parse(data);
-                    const delta = parsed.choices?.[0]?.delta?.content;
-                    if (delta) {
-                        fullText += delta;
-                        const displayText = stripThinkingTags(fullText);
-                        sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
-                        isFirst = false;
-                    }
-                } catch {
-                    // skip malformed JSON chunks
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+            const data = trimmed.slice(6);
+            if (data === '[DONE]') {
+                streamDone = true;
+                break;
+            }
+            try {
+                const parsed = JSON.parse(data);
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) {
+                    fullText += delta;
+                    const displayText = stripThinkingTags(fullText);
+                    sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
+                    isFirst = false;
                 }
+            } catch {
+                // skip malformed JSON chunks
             }
         }
     }
@@ -1044,19 +1090,37 @@ async function sendImageViaOllama(base64Data, prompt, model) {
     const timeoutMs = LOCAL_TIMEOUT_MS || 60000;
     const ollamaUrl = 'http://127.0.0.1:11434/api/generate';
 
-    const response = await fetch(ollamaUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model,
-            prompt,
-            images: [base64Data],
-            stream: true,
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
-    });
+    let response;
+    try {
+        response = await fetch(ollamaUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model,
+                prompt,
+                images: [base64Data],
+                stream: true,
+            }),
+            signal: AbortSignal.timeout(timeoutMs),
+        });
+    } catch (fetchError) {
+        // Connection refused = Ollama not running
+        if (fetchError.message.includes('fetch failed') || fetchError.message.includes('ECONNREFUSED')) {
+            throw new Error('Ollama is not running. Open a terminal and run: ollama serve');
+        }
+        throw fetchError;
+    }
 
-    if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
+    if (!response.ok) {
+        if (response.status === 500) {
+            const errBody = await response.text().catch(() => '');
+            if (errBody.includes('not found') || errBody.includes('pull')) {
+                throw new Error(`Model "${model}" not found. Run: ollama pull ${model}`);
+            }
+            throw new Error(`Ollama error (500): ${errBody.substring(0, 100) || 'Model may not be loaded. Run: ollama pull ' + model}`);
+        }
+        throw new Error(`Ollama HTTP ${response.status}`);
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
