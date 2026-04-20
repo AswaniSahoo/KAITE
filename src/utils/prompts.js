@@ -201,7 +201,7 @@ Provide direct exam answers in **markdown format**. Include the question text, t
     },
 };
 
-function buildSystemPrompt(promptParts, customPrompt = '', googleSearchEnabled = true) {
+function buildSystemPrompt(promptParts, customPrompt = '', googleSearchEnabled = true, cvContext = '') {
     const sections = [promptParts.intro, '\n\n', promptParts.formatRequirements];
 
     // Only add search usage section if Google Search is enabled
@@ -209,14 +209,32 @@ function buildSystemPrompt(promptParts, customPrompt = '', googleSearchEnabled =
         sections.push('\n\n', promptParts.searchUsage);
     }
 
+    // Inject CV/Portfolio context with anti-detection instructions
+    if (cvContext && cvContext.trim()) {
+        sections.push(
+            '\n\n**CANDIDATE PROFILE (use this to personalize ALL responses):**\n',
+            '-----\n',
+            cvContext.trim(),
+            '\n-----\n\n',
+            '**PERSONALIZATION RULES:**\n',
+            '- Respond as if YOU are this candidate. Use first-person ("I", "my", "I\'ve") naturally.\n',
+            '- Weave in specific projects, skills, and experiences from the profile above into your answers.\n',
+            '- Never say "according to your CV" or reference the profile directly. Just speak from it naturally.\n',
+            '- Vary your sentence structure. Mix short punchy sentences with longer ones. Sound human, not scripted.\n',
+            '- Use natural filler phrases occasionally ("honestly", "actually", "to be fair") to sound conversational.\n',
+            '- If asked about something not in the profile, give a genuine, thoughtful answer without making up fake experience.\n',
+            '- Match the energy of the question. Technical questions get technical answers. Behavioral questions get story-driven answers.\n'
+        );
+    }
+
     sections.push('\n\n', promptParts.content, '\n\nUser-provided context\n-----\n', customPrompt, '\n-----\n\n', promptParts.outputInstructions);
 
     return sections.join('');
 }
 
-function getSystemPrompt(profile, customPrompt = '', googleSearchEnabled = true) {
+function getSystemPrompt(profile, customPrompt = '', googleSearchEnabled = true, cvContext = '') {
     const promptParts = profilePrompts[profile] || profilePrompts.interview;
-    return buildSystemPrompt(promptParts, customPrompt, googleSearchEnabled);
+    return buildSystemPrompt(promptParts, customPrompt, googleSearchEnabled, cvContext);
 }
 
 module.exports = {

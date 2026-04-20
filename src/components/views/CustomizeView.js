@@ -193,6 +193,7 @@ export class CustomizeView extends LitElement {
         isRestoring: { type: Boolean },
         clearStatusMessage: { type: String },
         clearStatusType: { type: String },
+        cvContext: { type: String },
     };
 
     constructor() {
@@ -215,6 +216,7 @@ export class CustomizeView extends LitElement {
         this.fontSize = 20;
         this.audioMode = 'screen_only';
         this.customPrompt = '';
+        this.cvContext = '';
         this.theme = 'dark';
         this._loadFromStorage();
     }
@@ -231,6 +233,7 @@ export class CustomizeView extends LitElement {
             this.fontSize = prefs.fontSize ?? 20;
             this.audioMode = prefs.audioMode ?? 'screen_only';
             this.customPrompt = prefs.customPrompt ?? '';
+            this.cvContext = prefs.cvContext ?? '';
             this.theme = prefs.theme ?? 'dark';
             if (keybinds) {
                 this.keybinds = { ...this.getDefaultKeybinds(), ...keybinds };
@@ -359,6 +362,11 @@ export class CustomizeView extends LitElement {
         this.audioMode = e.target.value;
         await cheatingDaddy.storage.updatePreference('audioMode', this.audioMode);
         this.requestUpdate();
+    }
+
+    async handleCvContextInput(e) {
+        this.cvContext = e.target.value;
+        await cheatingDaddy.storage.updatePreference('cvContext', this.cvContext);
     }
 
     async handleThemeChange(e) {
@@ -576,13 +584,25 @@ export class CustomizeView extends LitElement {
                         <label class="form-label">Audio Mode</label>
                         <select class="control" .value=${this.audioMode} @change=${this.handleAudioModeSelect}>
                             <option value="screen_only">Screen Only (No Audio)</option>
-                            <option value="speaker_only">Speaker Only (Interviewer)</option>
-                            <option value="mic_only">Microphone Only (Me)</option>
-                            <option value="both">Both Speaker and Microphone</option>
+                            <option value="speaker_only">Speaker Only (Capture Interviewer)</option>
+                            <option value="mic_only">Microphone Only (Your Voice)</option>
+                            <option value="both">Both (Full Conversation)</option>
                         </select>
                     </div>
-                    ${this.audioMode !== 'screen_only' && this.audioMode !== 'speaker_only'
-                        ? html` <div class="warning-callout">May cause unexpected behavior. Only change this if you know what you're doing.</div> `
+                    ${this.audioMode === 'speaker_only'
+                        ? html`<div
+                              style="margin-top: 4px; padding: 8px 12px; border: 1px solid var(--accent); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: var(--font-size-xs); line-height: 1.4; background: rgba(59,130,246,0.06);"
+                          >
+                              Recommended for interviews. Captures the interviewer's audio through your speakers/headphones so the AI can hear their
+                              questions in real time.
+                          </div>`
+                        : ''}
+                    ${this.audioMode === 'both' || this.audioMode === 'mic_only'
+                        ? html`
+                              <div class="warning-callout">
+                                  Capturing your own microphone may create echo. Use headphones and test before a real interview.
+                              </div>
+                          `
                         : ''}
                     <div class="form-group">
                         <label class="form-label">Image Quality</label>
@@ -591,6 +611,49 @@ export class CustomizeView extends LitElement {
                             <option value="medium">Medium Quality</option>
                             <option value="low">Low Quality</option>
                         </select>
+                    </div>
+                </div>
+            </section>
+        `;
+    }
+
+    renderProfileSection() {
+        return html`
+            <section class="surface">
+                <div class="surface-title">Your Profile (Interview Context)</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label class="form-label">CV / Portfolio Context</label>
+                        <textarea
+                            class="control"
+                            rows="8"
+                            placeholder="Paste your CV, resume key points, portfolio highlights, or any context about yourself here. The AI will use this to give personalized, natural-sounding answers that match your actual experience. Keep it plain text.
+
+Example:
+Name: John Doe
+Role: Full Stack Developer (3 yrs)
+Skills: React, Node.js, Python, AWS
+Projects: E-commerce platform (50k users), ML pipeline for fraud detection
+Education: B.Tech CS from XYZ University"
+                            .value=${this.cvContext}
+                            @input=${this.handleCvContextInput}
+                            style="min-height: 140px; resize: vertical; font-family: var(--font-mono); font-size: var(--font-size-xs); line-height: 1.5;"
+                        ></textarea>
+                        <div style="margin-top: 4px; font-size: var(--font-size-xs); color: var(--text-secondary); line-height: 1.4;">
+                            This context is injected into the AI prompt so responses sound like YOUR experience. Keep formatting simple. Stored
+                            locally only.
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Custom System Prompt (Advanced)</label>
+                        <textarea
+                            class="control"
+                            rows="4"
+                            placeholder="Override or extend the default AI prompt. Leave empty to use the built-in interview assistant prompt."
+                            .value=${this.customPrompt}
+                            @input=${this.handleCustomPromptInput}
+                            style="min-height: 80px; resize: vertical; font-family: var(--font-mono); font-size: var(--font-size-xs); line-height: 1.5;"
+                        ></textarea>
                     </div>
                 </div>
             </section>
@@ -710,8 +773,8 @@ export class CustomizeView extends LitElement {
             <div class="unified-page">
                 <div class="unified-wrap">
                     <div class="page-title">Settings</div>
-                    ${this.renderAudioSection()} ${this.renderLanguageSection()} ${this.renderAppearanceSection()} ${this.renderKeyboardSection()}
-                    ${this.renderPrivacySection()}
+                    ${this.renderAudioSection()} ${this.renderProfileSection()} ${this.renderLanguageSection()} ${this.renderAppearanceSection()}
+                    ${this.renderKeyboardSection()} ${this.renderPrivacySection()}
                 </div>
             </div>
         `;

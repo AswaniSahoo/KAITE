@@ -24,6 +24,18 @@ const { GoogleGenAI } = require('@google/genai');
 // The first model in each list is the default (best bang for buck).
 
 const PROVIDERS = {
+    anthropic: {
+        name: 'Anthropic (Claude)',
+        baseUrl: 'https://api.anthropic.com/v1/messages',
+        keyField: 'anthropicApiKey',
+        models: [
+            // Haiku: ultra-low latency for real-time interview Q&A ($1/$5 per MTok)
+            { id: 'claude-haiku-4.5', name: 'Haiku 4.5 (Fast, Cheap)', contextWindow: 200000, speed: 'fastest', vision: true },
+            // Sonnet: higher quality for screen analysis / coding problems ($3/$15 per MTok)
+            { id: 'claude-sonnet-4.6', name: 'Sonnet 4.6 (Quality)', contextWindow: 200000, speed: 'medium', vision: true },
+        ],
+        defaultModel: 'claude-haiku-4.5',
+    },
     gemini: {
         name: 'Gemini (Google)',
         baseUrl: null, // uses SDK, not raw HTTP
@@ -301,6 +313,129 @@ async function streamGeminiSDK({ apiKey, model, messages, systemPrompt, onToken,
     return null;
 }
 
+// ── Anthropic Streaming ──────────────────────────────────────────────────
+
+async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken, onDone, onError }) {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), CLOUD_TIMEOUT_MS);
+
+        try {
+            // Separate system message from conversation
+            const conversationMsgs = messages
+                .filter((m) => m.role !== 'system')
+                .map((m) => ({
+                    role: m.role === 'assistant' ? 'assistant' : 'user',
+                    content: m.content,
+                }));
+
+            const response = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': apiKey,
+                    'anthropic-version': '2023-06-01',
+                },
+                body: JSON.stringify({
+                    model,
+                    max_tokens: 2048,
+                    system: systemPrompt || 'You are a helpful assistant.',
+                    messages: conversationMsgs,
+                    stream: true,
+                }),
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Anthropic API ${response.status}: ${errorText.substring(0, 200)}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullText = '';
+            let isFirst = true;
+            let leftover = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = leftover + decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
+                // Last line might be incomplete, save for next iteration
+                leftover = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6);
+                        try {
+                            const json = JSON.parse(data);
+                            // Anthropic SSE: content_block_delta has the text
+                            if (json.type === 'content_block_delta' && json.delta?.text) {
+                                fullText += json.delta.text;
+                                onToken(fullText, isFirst);
+                                isFirst = false;
+                            }
+                        } catch (_parseError) {
+                            // Skip invalid JSON chunks
+                        }
+                    }
+                }
+            }
+
+            // Process any remaining leftover
+            if (leftover.startsWith('data: ')) {
+                try {
+                    const json = JSON.parse(leftover.slice(6));
+                    if (json.type === 'content_block_delta' && json.delta?.text) {
+                        fullText += json.delta.text;
+                    }
+                } catch (_e) {
+                    // ignore
+                }
+            }
+
+            if (fullText.trim()) {
+                onDone(fullText.trim());
+                return fullText.trim();
+            }
+
+            onDone('');
+            return '';
+        } catch (error) {
+            clearTimeout(timeoutId);
+            lastError = error;
+
+            const isTimeout = error.name === 'AbortError';
+            const errorMsg = isTimeout ? `Anthropic timed out (${CLOUD_TIMEOUT_MS / 1000}s)` : error.message;
+
+            // 4xx errors won't fix themselves, bail immediately
+            if (isNonRetryableError(error.message)) {
+                console.error(`[Anthropic] Non-retryable: ${errorMsg.substring(0, 100)}`);
+                break;
+            }
+
+            console.error(`[Anthropic] Attempt ${attempt}/${MAX_RETRIES} failed: ${errorMsg}`);
+
+            if (attempt < MAX_RETRIES) {
+                const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+                console.log(`[Anthropic] Retrying in ${delay}ms...`);
+                await sleep(delay);
+            }
+        }
+    }
+
+    const finalError = `Anthropic failed: ${lastError?.message || 'Unknown error'}`;
+    console.error(finalError);
+    onError(finalError);
+    return null;
+}
+
 // ── Ollama Streaming (Local + Cloud) ──────────────────────────────────────
 
 async function streamOllama({ host, model, messages, onToken, onDone, onError, apiKey, timeoutMs }) {
@@ -412,6 +547,18 @@ async function callSingleProvider(provider, model, apiKey, messages, systemPromp
         });
     }
 
+    if (provider === 'anthropic') {
+        return streamAnthropic({
+            apiKey,
+            model,
+            messages,
+            systemPrompt,
+            onToken,
+            onDone,
+            onError,
+        });
+    }
+
     if (provider === 'gemini') {
         const historyMsgs = messages.filter(m => m.role !== 'system');
         return streamGeminiSDK({
@@ -465,10 +612,11 @@ async function callSingleProvider(provider, model, apiKey, messages, systemPromp
 function buildFailoverChain(primaryProvider, primaryModel, apiKeys, ollamaHost) {
     const chain = [];
 
-    // Priority order for failover (Gemini first = free + reliable)
+    // Priority order: Anthropic (fast+paid) -> OpenRouter (free) -> Gemini (free) -> Ollama Cloud -> Local
     const providerOrder = [
-        { key: 'gemini', model: PROVIDERS.gemini.defaultModel },
+        { key: 'anthropic', model: PROVIDERS.anthropic.defaultModel },
         { key: 'openrouter', model: PROVIDERS.openrouter.defaultModel },
+        { key: 'gemini', model: PROVIDERS.gemini.defaultModel },
         { key: 'ollamaCloud', model: PROVIDERS.ollamaCloud.defaultModel },
         { key: 'ollama', model: PROVIDERS.ollama.defaultModel },
     ];

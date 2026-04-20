@@ -331,4 +331,22 @@ function setupGeneralIpcHandlers() {
             return { success: false, error: error.message };
         }
     });
+
+    // ============ ANTHROPIC KEY ============
+    ipcMain.handle('storage:get-anthropic-api-key', async () => {
+        try {
+            return { success: true, data: storage.getAnthropicApiKey() };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('storage:set-anthropic-api-key', async (event, key) => {
+        try {
+            storage.setAnthropicApiKey(key);
+            return { success: true };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    });
 }

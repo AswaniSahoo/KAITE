@@ -249,6 +249,14 @@ function getOllamaCloudApiKey() {
     return getCredentials().ollamaApiKey || process.env.OLLAMA_API_KEY || '';
 }
 
+function getAnthropicApiKey() {
+    return getCredentials().anthropicApiKey || process.env.ANTHROPIC_API_KEY || '';
+}
+
+function setAnthropicApiKey(anthropicApiKey) {
+    return setCredentials({ anthropicApiKey });
+}
+
 // ============ PREFERENCES ============
 
 function getPreferences() {
@@ -550,6 +558,8 @@ module.exports = {
     setGroqApiKey,
     getOpenrouterApiKey,
     getOllamaCloudApiKey,
+    getAnthropicApiKey,
+    setAnthropicApiKey,
 
     // Preferences
     getPreferences,

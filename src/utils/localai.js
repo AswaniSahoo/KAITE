@@ -1,6 +1,7 @@
 const { Ollama } = require('ollama');
 const { getSystemPrompt } = require('./prompts');
 const { sendToRenderer, initializeNewSession, saveConversationTurn } = require('./gemini');
+const { getPreferences } = require('../storage');
 
 // ── State ──
 
@@ -224,10 +225,7 @@ async function sendToOllama(transcription) {
     }
 
     try {
-        const messages = [
-            { role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' },
-            ...localConversationHistory,
-        ];
+        const messages = [{ role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' }, ...localConversationHistory];
 
         const response = await ollamaClient.chat({
             model: ollamaModel,
@@ -273,7 +271,9 @@ async function initializeLocalSession(ollamaHost, model, whisperModel, profile, 
 
     try {
         // Setup system prompt
-        currentSystemPrompt = getSystemPrompt(profile, customPrompt, false);
+        const prefs = getPreferences();
+        const cvContext = prefs.cvContext || '';
+        currentSystemPrompt = getSystemPrompt(profile, customPrompt, false, cvContext);
 
         // Initialize Ollama client
         ollamaClient = new Ollama({ host: ollamaHost });

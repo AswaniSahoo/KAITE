@@ -10,6 +10,7 @@ const {
     getGroqApiKey,
     getOpenrouterApiKey,
     getOllamaCloudApiKey,
+    getAnthropicApiKey,
     incrementCharUsage,
     getModelForToday,
     getPreferences,
@@ -231,6 +232,7 @@ async function dispatchToTextProvider(transcription) {
 
     // Gather ALL API keys for the failover chain
     const apiKeys = {
+        anthropic: getAnthropicApiKey(),
         gemini: getApiKey(),
         openrouter: getOpenrouterApiKey(),
         ollamaCloud: getOllamaCloudApiKey(),
@@ -238,7 +240,9 @@ async function dispatchToTextProvider(transcription) {
 
     // Auto-detect primary if not explicitly set
     if (!provider) {
-        if (apiKeys.gemini) {
+        if (apiKeys.anthropic) {
+            provider = 'anthropic';
+        } else if (apiKeys.gemini) {
             provider = 'gemini';
         } else if (apiKeys.openrouter) {
             provider = 'openrouter';
@@ -546,7 +550,9 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     const enabledTools = await getEnabledTools();
     const googleSearchEnabled = enabledTools.some(tool => tool.googleSearch);
 
-    const systemPrompt = getSystemPrompt(profile, customPrompt, googleSearchEnabled);
+    const prefs = getPreferences();
+    const cvContext = prefs.cvContext || '';
+    const systemPrompt = getSystemPrompt(profile, customPrompt, googleSearchEnabled, cvContext);
     currentSystemPrompt = systemPrompt; // Store for Groq
 
     // Initialize new conversation session only on first connect
@@ -870,12 +876,22 @@ async function sendImageWithFailover(base64Data, prompt) {
     const model = prefs.textModel || 'gemini-2.5-flash';
 
     const apiKeys = {
+        anthropic: getAnthropicApiKey() || '',
         openrouter: getOpenrouterApiKey() || '',
         gemini: getApiKey() || '',
         ollamaCloud: getOllamaCloudApiKey() || '',
     };
 
-    const chain = buildFailoverChain(provider, model, apiKeys);
+    // For screen analysis, prefer Anthropic Sonnet (highest vision quality)
+    // Override the default model to Sonnet when Anthropic key is available
+    let imageProvider = provider;
+    let imageModel = model;
+    if (apiKeys.anthropic && provider !== 'anthropic') {
+        imageProvider = 'anthropic';
+        imageModel = 'claude-sonnet-4.6';
+    }
+
+    const chain = buildFailoverChain(imageProvider, imageModel, apiKeys);
 
     for (let i = 0; i < chain.length; i++) {
         const step = chain[i];
@@ -902,7 +918,9 @@ async function sendImageWithFailover(base64Data, prompt) {
             sendToRenderer('update-status', `Analyzing with ${step.provider}/${visionModel}...`);
 
             let result;
-            if (step.provider === 'gemini') {
+            if (step.provider === 'anthropic') {
+                result = await sendImageViaAnthropic(base64Data, prompt, visionModel, step.apiKey);
+            } else if (step.provider === 'gemini') {
                 result = await sendImageViaGeminiSDK(base64Data, prompt, visionModel, step.apiKey);
             } else if (step.provider === 'openrouter') {
                 result = await sendImageViaOpenAI(base64Data, prompt, visionModel, step.apiKey, step.provider);
@@ -985,6 +1003,96 @@ async function sendImageWithFailover(base64Data, prompt) {
         }
     }
     return { success: false, error: 'No providers available' };
+}
+// Anthropic Claude vision
+async function sendImageViaAnthropic(base64Data, prompt, model, apiKey) {
+    const timeoutMs = CLOUD_TIMEOUT_MS || 30000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const systemPrompt = currentSystemPrompt || 'You are a helpful assistant.';
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+                model,
+                max_tokens: 4096,
+                system: systemPrompt,
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            {
+                                type: 'image',
+                                source: {
+                                    type: 'base64',
+                                    media_type: 'image/jpeg',
+                                    data: base64Data,
+                                },
+                            },
+                            {
+                                type: 'text',
+                                text: prompt,
+                            },
+                        ],
+                    },
+                ],
+                stream: true,
+            }),
+            signal: controller.signal,
+        });
+
+        clearTimeout(timer);
+
+        if (!response.ok) {
+            const err = await response.text();
+            throw new Error(`Anthropic API ${response.status}: ${err.substring(0, 200)}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        let isFirst = true;
+        let leftover = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = leftover + decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            leftover = lines.pop() || '';
+
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const json = JSON.parse(line.slice(6));
+                        if (json.type === 'content_block_delta' && json.delta?.text) {
+                            fullText += json.delta.text;
+                            sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
+                            isFirst = false;
+                        }
+                    } catch (_e) {
+                        // skip
+                    }
+                }
+            }
+        }
+
+        if (fullText.trim()) {
+            return { success: true, text: fullText.trim(), model };
+        }
+        return { success: false, error: 'Empty response from Anthropic' };
+    } catch (error) {
+        clearTimeout(timer);
+        throw error;
+    }
 }
 
 // Gemini SDK vision

@@ -56,6 +56,13 @@ const storage = {
     async setOllamaCloudApiKey(key) {
         return ipcRenderer.invoke('storage:set-ollama-cloud-api-key', key);
     },
+    async getAnthropicApiKey() {
+        const result = await ipcRenderer.invoke('storage:get-anthropic-api-key');
+        return result.success ? result.data : '';
+    },
+    async setAnthropicApiKey(key) {
+        return ipcRenderer.invoke('storage:set-anthropic-api-key', key);
+    },
 
     // Preferences
     async getPreferences() {

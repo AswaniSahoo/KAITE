@@ -536,6 +536,7 @@ export class MainView extends LitElement {
         this._geminiKey = '';
         this._ollamaCloudKey = '';
         this._openrouterKey = '';
+        this._anthropicKey = '';
         this._tokenError = false;
         this._keyError = false;
         this._showLocalHelp = false;
@@ -571,6 +572,7 @@ export class MainView extends LitElement {
             this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
             this._ollamaCloudKey = (await cheatingDaddy.storage.getOllamaCloudApiKey().catch(() => '')) || '';
             this._openrouterKey = (await cheatingDaddy.storage.getOpenrouterApiKey().catch(() => '')) || '';
+            this._anthropicKey = (await cheatingDaddy.storage.getAnthropicApiKey().catch(() => '')) || '';
 
             // Load provider selection
             this._textProvider = prefs.textProvider || 'gemini';
@@ -758,6 +760,12 @@ export class MainView extends LitElement {
         this.requestUpdate();
     }
 
+    async _saveAnthropicKey(val) {
+        this._anthropicKey = val;
+        await cheatingDaddy.storage.setAnthropicApiKey(val);
+        this.requestUpdate();
+    }
+
     async _saveTextProvider(val) {
         this._textProvider = val;
         // Reset model to provider default when switching
@@ -928,7 +936,7 @@ export class MainView extends LitElement {
             <div class="mode-cards">
                 <div class="mode-card" @click=${() => this._saveMode('byok')}>
                     <span class="mode-card-title">Use your API keys</span>
-                    <span class="mode-card-desc">Bring your own Gemini / OpenRouter / Ollama keys</span>
+                    <span class="mode-card-desc">Bring your own Anthropic / Gemini / OpenRouter keys</span>
                 </div>
                 <div class="mode-card" @click=${() => this._saveMode('local')}>
                     <span class="mode-card-title">Use local AI</span>
@@ -947,6 +955,20 @@ export class MainView extends LitElement {
 
         return html`
             <div class="form-group">
+                <label class="form-label">Anthropic API Key</label>
+                <input
+                    type="password"
+                    placeholder="Primary for interviews (Haiku=fast, Sonnet=screen analysis)"
+                    .value=${this._anthropicKey}
+                    @input=${e => this._saveAnthropicKey(e.target.value)}
+                />
+                <div class="form-hint">
+                    <span class="link" @click=${() => this.onExternalLink('https://console.anthropic.com/settings/keys')}>Get Anthropic key</span>
+                    (paid, Haiku $1/MTok input, Sonnet $3/MTok for screen analysis)
+                </div>
+            </div>
+
+            <div class="form-group">
                 <label class="form-label">Gemini API Key</label>
                 <input
                     type="password"
@@ -957,7 +979,7 @@ export class MainView extends LitElement {
                 />
                 <div class="form-hint">
                     <span class="link" @click=${() => this.onExternalLink('https://aistudio.google.com/apikey')}>Get Gemini key</span>
-                    (free, used for transcription and as primary AI)
+                    (free, used for transcription and as fallback AI)
                 </div>
             </div>
 
@@ -1009,6 +1031,7 @@ export class MainView extends LitElement {
             <div class="form-group">
                 <label class="form-label">Text Response Provider</label>
                 <select .value=${this._textProvider} @change=${e => this._saveTextProvider(e.target.value)}>
+                    <option value="anthropic" ?selected=${this._textProvider === 'anthropic'}>Anthropic Claude (Best for Interviews)</option>
                     <option value="gemini" ?selected=${this._textProvider === 'gemini'}>Gemini (Free, Recommended)</option>
                     <option value="openrouter" ?selected=${this._textProvider === 'openrouter'}>OpenRouter (Any Model)</option>
                     <option value="ollamaCloud" ?selected=${this._textProvider === 'ollamaCloud'}>Ollama Cloud (Free, Qwen/Gemma)</option>
