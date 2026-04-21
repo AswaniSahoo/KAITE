@@ -214,7 +214,7 @@ export class CustomizeView extends LitElement {
         this.clearStatusType = '';
         this.backgroundTransparency = 0.8;
         this.fontSize = 20;
-        this.audioMode = 'screen_only';
+        this.audioMode = 'speaker_only';
         this.customPrompt = '';
         this.cvContext = '';
         this.theme = 'dark';
@@ -231,7 +231,7 @@ export class CustomizeView extends LitElement {
             this.googleSearchEnabled = prefs.googleSearchEnabled ?? true;
             this.backgroundTransparency = prefs.backgroundTransparency ?? 0.8;
             this.fontSize = prefs.fontSize ?? 20;
-            this.audioMode = prefs.audioMode ?? 'screen_only';
+            this.audioMode = prefs.audioMode ?? 'speaker_only';
             this.customPrompt = prefs.customPrompt ?? '';
             this.cvContext = prefs.cvContext ?? '';
             this.theme = prefs.theme ?? 'dark';
@@ -493,7 +493,7 @@ export class CustomizeView extends LitElement {
                 selectedLanguage: 'en-US',
                 selectedScreenshotInterval: '5',
                 selectedImageQuality: 'medium',
-                audioMode: 'screen_only',
+                audioMode: 'speaker_only',
                 fontSize: 20,
                 backgroundTransparency: 0.8,
                 googleSearchEnabled: false,

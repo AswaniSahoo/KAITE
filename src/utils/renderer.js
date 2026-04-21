@@ -11,6 +11,50 @@ const SAMPLE_RATE = 24000;
 const AUDIO_CHUNK_DURATION = 0.1; // seconds
 const BUFFER_SIZE = 4096; // Increased buffer size for smoother audio
 
+// Voice Activity Detection (VAD) - Energy-based noise gate with speech trailing
+// Audio chunks below threshold are dropped UNLESS we recently detected speech.
+// This prevents cutting off the trailing end of words when volume naturally drops.
+const NOISE_GATE_THRESHOLD = 0.005;
+const SPEECH_TRAIL_CHUNKS = 15; // Keep gate open for 15 chunks (~1.5s) after last speech
+let speechTrailCounter = 0; // Counts down from SPEECH_TRAIL_CHUNKS to 0
+
+/**
+ * Calculate the RMS (Root Mean Square) energy of an audio chunk.
+ * Returns a value between 0 (silence) and 1 (max volume).
+ */
+function calculateRMS(samples) {
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) {
+        sum += samples[i] * samples[i];
+    }
+    return Math.sqrt(sum / samples.length);
+}
+
+/**
+ * Check if an audio chunk should be sent to the transcription service.
+ * Uses a trailing buffer: once speech is detected, keeps gate open for
+ * SPEECH_TRAIL_CHUNKS more chunks even if volume drops. This captures
+ * the soft endings of words that speakers naturally trail off on.
+ */
+function isAboveNoiseGate(samples) {
+    const rms = calculateRMS(samples);
+
+    if (rms >= NOISE_GATE_THRESHOLD) {
+        // Speech detected - reset the trail counter
+        speechTrailCounter = SPEECH_TRAIL_CHUNKS;
+        return true;
+    }
+
+    if (speechTrailCounter > 0) {
+        // Below threshold but still in the trailing window - let it through
+        speechTrailCounter--;
+        return true;
+    }
+
+    // Pure silence/noise, no recent speech
+    return false;
+}
+
 let hiddenVideo = null;
 let offscreenCanvas = null;
 let offscreenContext = null;
@@ -223,7 +267,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
 
     // Refresh preferences cache
     await loadPreferencesCache();
-    const audioMode = preferencesCache.audioMode || 'screen_only';
+    const audioMode = preferencesCache.audioMode || 'speaker_only';
 
     try {
         if (audioMode === 'screen_only') {
@@ -358,7 +402,9 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
                 },
             });
 
-            console.log('Windows capture started with loopback audio');
+            console.log(
+                `Windows capture started - Audio mode: ${audioMode} (loopback: ON, mic: ${audioMode === 'mic_only' || audioMode === 'both' ? 'ON' : 'OFF'})`
+            );
 
             // Setup audio processing for Windows loopback audio only
             setupWindowsLoopbackProcessing();
@@ -414,6 +460,10 @@ function setupLinuxMicProcessing(micStream) {
         // Process audio in chunks
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
+
+            // NOISE GATE: skip silent/low-energy chunks (fan noise, wind, etc.)
+            if (!isAboveNoiseGate(chunk)) continue;
+
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
@@ -447,6 +497,10 @@ function setupLinuxSystemAudioProcessing() {
         // Process audio in chunks
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
+
+            // NOISE GATE: skip silent/low-energy chunks (fan noise, wind, etc.)
+            if (!isAboveNoiseGate(chunk)) continue;
+
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
@@ -477,6 +531,10 @@ function setupWindowsLoopbackProcessing() {
         // Process audio in chunks
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
+
+            // NOISE GATE: skip silent/low-energy chunks (fan noise, wind, etc.)
+            if (!isAboveNoiseGate(chunk)) continue;
+
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 

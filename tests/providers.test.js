@@ -48,13 +48,14 @@ function assertEqual(actual, expected, message) {
 // ────────────────────────────────────────────────────────────────────────────
 console.log('\n=== Provider Registry Tests ===\n');
 
-test('All 4 providers exist in registry', () => {
+test('All 5 providers exist in registry', () => {
     const providers = Object.keys(PROVIDERS);
+    assert(providers.includes('anthropic'), 'Missing anthropic');
     assert(providers.includes('gemini'), 'Missing gemini');
     assert(providers.includes('openrouter'), 'Missing openrouter');
     assert(providers.includes('ollamaCloud'), 'Missing ollamaCloud');
     assert(providers.includes('ollama'), 'Missing ollama');
-    assertEqual(providers.length, 4, 'Provider count');
+    assertEqual(providers.length, 5, 'Provider count');
 });
 
 test('Groq is removed from providers', () => {
@@ -126,6 +127,27 @@ test('Ollama Cloud has vision-capable cloud models', () => {
 test('Ollama Cloud requires API key (has keyField)', () => {
     assertEqual(PROVIDERS.ollamaCloud.keyField, 'ollamaApiKey', 'Ollama Cloud keyField');
     assertEqual(PROVIDERS.ollamaCloud.baseUrl, 'https://ollama.com/api/chat', 'Ollama Cloud baseUrl');
+});
+
+test('Anthropic has Haiku as default (fastest for interviews)', () => {
+    assertEqual(PROVIDERS.anthropic.defaultModel, 'claude-haiku-4-5-20251001', 'Anthropic default model');
+});
+
+test('Anthropic has vision-capable models', () => {
+    const visionModels = PROVIDERS.anthropic.models.filter(m => m.vision);
+    assert(visionModels.length >= 2, `Expected at least 2 Anthropic vision models, got ${visionModels.length}`);
+});
+
+test('Anthropic has both Haiku and Sonnet', () => {
+    const models = PROVIDERS.anthropic.models;
+    assert(
+        models.some(m => m.id.includes('haiku')),
+        'Missing Haiku model'
+    );
+    assert(
+        models.some(m => m.id.includes('sonnet')),
+        'Missing Sonnet model'
+    );
 });
 
 test('All models have required fields (id, name, contextWindow, speed, vision)', () => {
@@ -203,16 +225,18 @@ test('Gemini as primary uses SDK path', () => {
     assertEqual(chain[0].provider, 'gemini', 'Gemini should be first');
 });
 
-test('Failover order: Gemini -> OpenRouter -> Ollama Cloud -> Ollama', () => {
-    const chain = buildFailoverChain('gemini', 'gemini-2.5-flash', {
+test('Failover order: Anthropic -> OpenRouter -> Gemini -> Ollama Cloud -> Ollama', () => {
+    const chain = buildFailoverChain('anthropic', 'claude-haiku-4-5-20251001', {
+        anthropic: 'sk-ant-test',
         gemini: 'AIza_test',
         openrouter: 'sk-test',
         ollamaCloud: 'ollama_test',
     });
-    assertEqual(chain[0].provider, 'gemini', 'First: Gemini');
+    assertEqual(chain[0].provider, 'anthropic', 'First: Anthropic');
     assertEqual(chain[1].provider, 'openrouter', 'Second: OpenRouter');
-    assertEqual(chain[2].provider, 'ollamaCloud', 'Third: Ollama Cloud');
-    assertEqual(chain[3].provider, 'ollama', 'Fourth: Ollama');
+    assertEqual(chain[2].provider, 'gemini', 'Third: Gemini');
+    assertEqual(chain[3].provider, 'ollamaCloud', 'Fourth: Ollama Cloud');
+    assertEqual(chain[4].provider, 'ollama', 'Fifth: Ollama');
 });
 
 test('Ollama Cloud excluded when no API key', () => {

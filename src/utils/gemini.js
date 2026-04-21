@@ -54,9 +54,57 @@ function formatSpeakerResults(results) {
 
 module.exports.formatSpeakerResults = formatSpeakerResults;
 
+// Live API model fallback: track if primary model's quota is exhausted
+let liveModelQuotaExhausted = false;
+
 // Audio capture variables
 let systemAudioProc = null;
 let messageBuffer = '';
+
+// Debounce: dispatch transcription after silence (no new VALID chunks)
+// This fires BEFORE generationComplete in most cases, saving 1-3 seconds
+const TRANSCRIPTION_DEBOUNCE_MS = 2000; // 2s silence = speaker actually finished
+let transcriptionDebounceTimer = null;
+let isCapturingSpeech = false; // tracks if we've shown "Capturing..." status
+
+/**
+ * Quick check: does this chunk contain any Latin characters (likely English)?
+ * Non-Latin noise should NOT reset the debounce timer.
+ */
+function chunkHasLatinChars(text) {
+    return /[a-zA-Z]/.test(text);
+}
+
+function resetTranscriptionDebounce() {
+    clearTranscriptionDebounce();
+
+    // Show "Capturing speech..." on first chunk so user knows we're hearing something
+    if (!isCapturingSpeech && !isDispatching) {
+        isCapturingSpeech = true;
+        sendToRenderer('update-status', 'Capturing speech...');
+    }
+
+    transcriptionDebounceTimer = setTimeout(() => {
+        isCapturingSpeech = false;
+        if (currentTranscription.trim() !== '') {
+            console.log('[DEBOUNCE] Silence detected, dispatching...');
+            sendToRenderer('update-status', 'Analyzing...');
+            const text = currentTranscription;
+            currentTranscription = '';
+            messageBuffer = '';
+            dispatchToTextProvider(text);
+        } else {
+            sendToRenderer('update-status', 'Listening...');
+        }
+    }, TRANSCRIPTION_DEBOUNCE_MS);
+}
+
+function clearTranscriptionDebounce() {
+    if (transcriptionDebounceTimer) {
+        clearTimeout(transcriptionDebounceTimer);
+        transcriptionDebounceTimer = null;
+    }
+}
 
 // Reconnection variables
 let isUserClosing = false;
@@ -221,8 +269,123 @@ function hasGroqKey() {
  * and lets the provider system cascade through them if one fails.
  * Failover order: primary -> groq -> openrouter -> gemini -> ollama (local)
  */
+/**
+ * Check if a transcription is mostly English / Latin-script text.
+ * Returns false for noise markers, non-Latin scripts, and very short gibberish.
+ */
+function isValidEnglishTranscription(text) {
+    const cleaned = text.trim();
+
+    // Skip noise markers from Gemini
+    if (/^\[?noise\]?$/i.test(cleaned) || /^<?noise>?$/i.test(cleaned)) {
+        return false;
+    }
+
+    // Must have at least 3 actual words to be worth processing
+    const words = cleaned.split(/\s+/).filter(w => w.length > 0);
+    if (words.length < 3) {
+        return false;
+    }
+
+    // Count Latin-script characters vs non-Latin
+    const latinChars = (cleaned.match(/[a-zA-Z0-9\s.,!?'";\-:()]/g) || []).length;
+    const totalNonSpace = cleaned.replace(/\s/g, '').length;
+
+    // If less than 50% Latin characters, it's likely non-English noise
+    if (totalNonSpace > 0 && latinChars / totalNonSpace < 0.5) {
+        return false;
+    }
+
+    return true;
+}
+
+// Dispatch lock: prevents overlapping API calls and adds cooldown between responses
+let isDispatching = false;
+let lastDispatchTime = 0;
+const DISPATCH_COOLDOWN_MS = 3000; // 3 seconds cooldown after a response completes
+
+/**
+ * Check if a transcription is just interviewer filler, not a real question.
+ * Filler like "okay let's move on", "go ahead", "next question" shouldn't trigger a response.
+ */
+function isInterviewerFiller(text) {
+    const cleaned = text
+        .trim()
+        .toLowerCase()
+        .replace(/<noise>/g, '')
+        .replace(/\[noise\]/g, '')
+        .trim();
+    const fillerPatterns = [
+        /^(okay|ok|so|alright|right|sure|good|great|hmm|um|uh)\s*(,?\s*(let'?s|we)?\s*(go|move|have|proceed|continue|next|start)\s*(on|ahead|forward|with)?)?[\s.!?]*$/i,
+        /^(next|another)\s*(question|one)[\s.!?]*$/i,
+        /^(go\s*ahead|carry\s*on|proceed)[\s.!?]*$/i,
+        /^(i'?m\s*ready|ready|let'?s\s*(go|start|begin))[\s.!?]*$/i,
+        /^(okay|ok)\s*(good|great|fine|nice|perfect|wonderful)[\s.!?]*$/i,
+        /^(tell\s*me\s*more|go\s*on|continue)[\s.!?]*$/i,
+        /^(let'?s\s*have\s*another\s*question)[\s.!?]*$/i,
+    ];
+    return fillerPatterns.some(p => p.test(cleaned));
+}
+
+/**
+ * Strip noise markers from transcription before sending to AI.
+ */
+function cleanTranscriptionForAI(text) {
+    return text
+        .replace(/<noise>/gi, '')
+        .replace(/\[noise\]/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
 async function dispatchToTextProvider(transcription) {
     if (!transcription || transcription.trim() === '') return;
+
+    // LOCK: If already generating a response, skip this transcription
+    if (isDispatching) {
+        console.log(`[BLOCKED] Already generating a response, ignoring: "${transcription.trim().substring(0, 60)}..."`);
+        return;
+    }
+
+    // COOLDOWN: Don't dispatch too quickly after last response
+    const timeSinceLastDispatch = Date.now() - lastDispatchTime;
+    if (timeSinceLastDispatch < DISPATCH_COOLDOWN_MS) {
+        console.log(
+            `[COOLDOWN] ${Math.ceil((DISPATCH_COOLDOWN_MS - timeSinceLastDispatch) / 1000)}s remaining, skipping: "${transcription.trim().substring(0, 60)}..."`
+        );
+        return;
+    }
+
+    // Filter out noise and non-English transcriptions
+    if (!isValidEnglishTranscription(transcription)) {
+        console.log(`[SKIPPED] Non-English or noise detected: "${transcription.trim().substring(0, 80)}"`);
+        sendToRenderer('update-status', 'Listening...');
+        return;
+    }
+
+    // Filter out interviewer filler (not a real question)
+    if (isInterviewerFiller(transcription)) {
+        console.log(`[FILLER] Interviewer filler, not a question: "${transcription.trim()}"`);
+        sendToRenderer('update-status', 'Listening...');
+        return;
+    }
+
+    // Clean noise markers from the transcription before sending to AI
+    const cleanedTranscription = cleanTranscriptionForAI(transcription);
+    if (!cleanedTranscription || cleanedTranscription.length < 5) {
+        console.log(`[SKIPPED] Transcription too short after cleaning: "${cleanedTranscription}"`);
+        sendToRenderer('update-status', 'Listening...');
+        return;
+    }
+
+    // Set lock
+    isDispatching = true;
+    const dispatchStartTime = Date.now();
+
+    // Log exactly what the interviewer said for analysis
+    console.log('\n' + '='.repeat(80));
+    console.log(`[INTERVIEWER] "${cleanedTranscription}"`);
+    console.log('='.repeat(80) + '\n');
 
     const prefs = getPreferences();
 
@@ -233,78 +396,81 @@ async function dispatchToTextProvider(transcription) {
     // Gather ALL API keys for the failover chain
     const apiKeys = {
         anthropic: getAnthropicApiKey(),
-        gemini: getApiKey(),
         openrouter: getOpenrouterApiKey(),
+        gemini: getApiKey(),
         ollamaCloud: getOllamaCloudApiKey(),
     };
 
-    // Auto-detect primary if not explicitly set
-    if (!provider) {
-        if (apiKeys.anthropic) {
-            provider = 'anthropic';
-        } else if (apiKeys.gemini) {
-            provider = 'gemini';
-        } else if (apiKeys.openrouter) {
-            provider = 'openrouter';
-        } else if (apiKeys.ollamaCloud) {
-            provider = 'ollamaCloud';
-        } else {
-            // Last resort: try local Ollama
-            provider = 'ollama';
-        }
+    // Pick primary provider: user's choice, or first available from chain
+    if (!provider || !apiKeys[provider]) {
+        const chain = ['anthropic', 'openrouter', 'gemini', 'ollamaCloud', 'ollama'];
+        provider = chain.find(p => p === 'ollama' || apiKeys[p]) || 'ollama';
     }
 
-    if (!model) {
-        model = PROVIDERS[provider]?.defaultModel || 'qwen-qwq-32b';
+    // Resolve model for selected provider
+    if (!model && PROVIDERS[provider]) {
+        model = PROVIDERS[provider].defaultModel;
     }
 
-    const ollamaHost = prefs.ollamaHost || 'http://127.0.0.1:11434';
-    const ollamaModel = prefs.ollamaModel || 'gemma3:4b';
+    const ollamaHost = prefs.ollamaHost || 'http://localhost:11434';
+    const ollamaModel = prefs.ollamaModel || 'gemma4';
 
-    // If primary is ollama, use user's configured model
     if (provider === 'ollama') {
         model = ollamaModel;
     }
 
-    sendToRenderer('update-status', `Thinking (${PROVIDERS[provider]?.name || provider})...`);
+    try {
+        sendToRenderer('update-status', `Thinking (${PROVIDERS[provider]?.name || provider})...`);
 
-    const result = await sendToProvider(transcription, {
-        provider,
-        model,
-        apiKey: apiKeys[provider] || '',
-        apiKeys,
-        systemPrompt: currentSystemPrompt || 'You are a helpful assistant.',
-        conversationHistory: groqConversationHistory,
-        ollamaHost,
-        onToken: (displayText, isFirst) => {
-            sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
-        },
-        onDone: cleanedResponse => {
-            if (cleanedResponse) {
-                groqConversationHistory.push({ role: 'user', content: transcription.trim() });
-                groqConversationHistory.push({ role: 'assistant', content: cleanedResponse });
+        let resolvedProvider = provider;
+        let resolvedModel = model;
 
-                if (groqConversationHistory.length > 40) {
-                    groqConversationHistory = groqConversationHistory.slice(-40);
+        const result = await sendToProvider(cleanedTranscription, {
+            provider,
+            model,
+            apiKey: apiKeys[provider] || '',
+            apiKeys,
+            systemPrompt: currentSystemPrompt || 'You are a helpful assistant.',
+            conversationHistory: groqConversationHistory,
+            ollamaHost,
+            onToken: (displayText, isFirst) => {
+                sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
+            },
+            onDone: cleanedResponse => {
+                if (cleanedResponse) {
+                    groqConversationHistory.push({ role: 'user', content: cleanedTranscription });
+                    groqConversationHistory.push({ role: 'assistant', content: cleanedResponse });
+
+                    if (groqConversationHistory.length > 40) {
+                        groqConversationHistory = groqConversationHistory.slice(-40);
+                    }
+
+                    saveConversationTurn(cleanedTranscription, cleanedResponse);
                 }
+                sendToRenderer('update-status', 'Listening...');
+            },
+            onError: errorMsg => {
+                console.error('All providers failed:', errorMsg);
+                sendToRenderer('update-status', 'All providers failed. Check your API keys or start Ollama.');
+            },
+            onStatus: statusMsg => {
+                sendToRenderer('update-status', statusMsg);
+            },
+        });
 
-                saveConversationTurn(transcription, cleanedResponse);
-            }
-            const usedProvider = result?.provider || provider;
-            const usedModel = result?.model || model;
-            console.log(`Response completed (${usedProvider}/${usedModel})`);
-            sendToRenderer('update-status', 'Listening...');
-        },
-        onError: errorMsg => {
-            console.error('All providers failed:', errorMsg);
-            sendToRenderer('update-status', 'All providers failed. Check your API keys or start Ollama.');
-        },
-        onStatus: statusMsg => {
-            sendToRenderer('update-status', statusMsg);
-        },
-    });
+        if (result) {
+            resolvedProvider = result.provider || provider;
+            resolvedModel = result.model || model;
+            const elapsed = ((Date.now() - dispatchStartTime) / 1000).toFixed(1);
+            console.log(`[TIMING] Response completed in ${elapsed}s (${resolvedProvider}/${resolvedModel})`);
+        }
 
-    return result;
+        return result;
+    } finally {
+        // ALWAYS release lock and set cooldown, even on error
+        isDispatching = false;
+        lastDispatchTime = Date.now();
+    }
 }
 
 function trimConversationHistoryForGemma(history, maxChars = 42000) {
@@ -553,38 +719,72 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     const prefs = getPreferences();
     const cvContext = prefs.cvContext || '';
     const systemPrompt = getSystemPrompt(profile, customPrompt, googleSearchEnabled, cvContext);
-    currentSystemPrompt = systemPrompt; // Store for Groq
+    currentSystemPrompt = systemPrompt; // Store for text providers (Anthropic, OpenRouter, etc.)
+
+    // Gemini Live is used ONLY as a transcription relay.
+    // The actual interview responses come from Anthropic/text providers via dispatchToTextProvider().
+    const transcriptionPrompt =
+        'You are a silent transcription relay. Your ONLY job is to listen to the audio and transcribe what people say. ' +
+        'CRITICAL RULES: ' +
+        '1. Always transcribe in English ONLY, regardless of what language you think you hear. ' +
+        '2. If you cannot understand what was said, output nothing. Do NOT guess or transcribe in other languages. ' +
+        '3. Ignore background noise, music, system sounds, and unclear mumbling entirely. ' +
+        '4. Do NOT generate any substantive response. When someone finishes speaking, just reply with a single period "." and nothing else. ' +
+        '5. Never answer questions, never give advice, never acknowledge what was said beyond the single period.';
 
     // Initialize new conversation session only on first connect
     if (!isReconnect) {
         initializeNewSession(profile, customPrompt);
     }
 
+    // Model fallback: try newer model first, fall back to older if quota exceeded
+    const LIVE_MODELS = ['gemini-3.1-flash-live-preview', 'gemini-2.5-flash-native-audio-preview-09-2025'];
+    const modelToUse = liveModelQuotaExhausted ? LIVE_MODELS[1] : LIVE_MODELS[0];
+    console.log(`[Live API] Connecting with model: ${modelToUse}`);
+
     try {
         const session = await client.live.connect({
-            model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+            model: modelToUse,
             callbacks: {
                 onopen: function () {
                     sendToRenderer('update-status', 'Live session connected');
                 },
                 onmessage: function (message) {
-                    console.log('----------------', message);
+                    // Only log setup/control messages, NOT individual transcription chunks
+                    if (
+                        message.setupComplete ||
+                        message.serverContent?.generationComplete ||
+                        message.serverContent?.turnComplete ||
+                        message.serverContent?.interrupted ||
+                        message.serverContent?.groundingMetadata
+                    ) {
+                        console.log('----------------', message);
+                    }
 
                     // Handle input transcription (what was spoken)
                     if (message.serverContent?.inputTranscription?.results) {
                         currentTranscription += formatSpeakerResults(message.serverContent.inputTranscription.results);
+                        resetTranscriptionDebounce();
                     } else if (message.serverContent?.inputTranscription?.text) {
                         const text = message.serverContent.inputTranscription.text;
                         if (text.trim() !== '') {
                             currentTranscription += text;
+                            // Only reset debounce for Latin-script chunks (likely real English speech)
+                            // Non-Latin noise (Hindi, Sinhala, etc.) should NOT delay the dispatch
+                            if (chunkHasLatinChars(text)) {
+                                resetTranscriptionDebounce();
+                            }
                         }
                     }
 
-                    // DISABLED: Gemini's outputTranscription - using Groq for faster responses instead
-                    // if (message.serverContent?.outputTranscription?.text) { ... }
+                    // Ignore outputTranscription entirely - Gemini's own output is irrelevant
 
+                    // generationComplete is a backup trigger - debounce usually fires first
                     if (message.serverContent?.generationComplete) {
+                        clearTranscriptionDebounce();
+                        isCapturingSpeech = false;
                         if (currentTranscription.trim() !== '') {
+                            sendToRenderer('update-status', 'Analyzing...');
                             dispatchToTextProvider(currentTranscription);
                             currentTranscription = '';
                         }
@@ -602,6 +802,11 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                 onclose: function (e) {
                     console.log('Session closed:', e.reason);
 
+                    // Reset all state in case session died mid-capture
+                    isDispatching = false;
+                    isCapturingSpeech = false;
+                    clearTranscriptionDebounce();
+
                     // Don't reconnect if user intentionally closed
                     if (isUserClosing) {
                         isUserClosing = false;
@@ -609,7 +814,26 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                         return;
                     }
 
-                    // Attempt reconnection
+                    // Detect quota/billing errors - don't keep retrying the same model
+                    const reason = (e.reason || '').toLowerCase();
+                    if (reason.includes('quota') || reason.includes('billing')) {
+                        if (!liveModelQuotaExhausted) {
+                            // First time: switch to fallback model
+                            liveModelQuotaExhausted = true;
+                            console.log('[Live API] Quota exceeded on primary model, switching to fallback...');
+                            sendToRenderer('update-status', 'Quota hit, switching model...');
+                            reconnectAttempts = 0; // Reset attempts for fallback
+                            attemptReconnect();
+                            return;
+                        } else {
+                            // Both models quota-exhausted
+                            console.log('[Live API] Both models quota-exhausted. Wait for quota reset.');
+                            sendToRenderer('update-status', 'API quota exceeded - try again later');
+                            return;
+                        }
+                    }
+
+                    // Attempt reconnection for non-quota errors
                     if (sessionParams && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                         attemptReconnect();
                     } else {
@@ -619,19 +843,19 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
             },
             config: {
                 responseModalities: [Modality.AUDIO],
-                proactivity: { proactiveAudio: true },
-                outputAudioTranscription: {},
-                tools: enabledTools,
-                // Enable speaker diarization
+                // NOTE: proactiveAudio intentionally omitted - Gemini should NOT jump in unprompted
+                // NOTE: outputAudioTranscription intentionally omitted - we don't need Gemini's response text
+                // Enable input transcription (what the interviewer/user says)
                 inputAudioTranscription: {
                     enableSpeakerDiarization: true,
                     minSpeakerCount: 2,
                     maxSpeakerCount: 2,
                 },
+                tools: enabledTools,
                 contextWindowCompression: { slidingWindow: {} },
                 speechConfig: { languageCode: language },
                 systemInstruction: {
-                    parts: [{ text: systemPrompt }],
+                    parts: [{ text: transcriptionPrompt }],
                 },
             },
         });
@@ -888,7 +1112,7 @@ async function sendImageWithFailover(base64Data, prompt) {
     let imageModel = model;
     if (apiKeys.anthropic && provider !== 'anthropic') {
         imageProvider = 'anthropic';
-        imageModel = 'claude-sonnet-4.6';
+        imageModel = 'claude-sonnet-4-6';
     }
 
     const chain = buildFailoverChain(imageProvider, imageModel, apiKeys);

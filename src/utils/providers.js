@@ -30,11 +30,11 @@ const PROVIDERS = {
         keyField: 'anthropicApiKey',
         models: [
             // Haiku: ultra-low latency for real-time interview Q&A ($1/$5 per MTok)
-            { id: 'claude-haiku-4.5', name: 'Haiku 4.5 (Fast, Cheap)', contextWindow: 200000, speed: 'fastest', vision: true },
+            { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5 (Fast, Cheap)', contextWindow: 200000, speed: 'fastest', vision: true },
             // Sonnet: higher quality for screen analysis / coding problems ($3/$15 per MTok)
-            { id: 'claude-sonnet-4.6', name: 'Sonnet 4.6 (Quality)', contextWindow: 200000, speed: 'medium', vision: true },
+            { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6 (Quality)', contextWindow: 200000, speed: 'medium', vision: true },
         ],
-        defaultModel: 'claude-haiku-4.5',
+        defaultModel: 'claude-haiku-4-5-20251001',
     },
     gemini: {
         name: 'Gemini (Google)',
@@ -57,8 +57,8 @@ const PROVIDERS = {
             { id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (Free, Vision)', contextWindow: 262144, speed: 'fast', vision: true },
             { id: 'google/gemma-4-27b-a4b-it:free', name: 'Gemma 4 26B MoE (Free, Fast)', contextWindow: 262144, speed: 'fastest', vision: true },
             // Paid premium models (needs credits, highest accuracy)
-            { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4 (Paid)', contextWindow: 200000, speed: 'medium', vision: true },
-            { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet (Paid)', contextWindow: 200000, speed: 'medium', vision: true },
+            { id: 'anthropic/claude-sonnet-4.6', name: 'Claude Sonnet 4.6 (Paid)', contextWindow: 200000, speed: 'medium', vision: true },
+            { id: 'anthropic/claude-haiku-4.5', name: 'Claude Haiku 4.5 (Paid)', contextWindow: 200000, speed: 'fastest', vision: true },
             { id: 'google/gemini-2.5-flash-preview', name: 'Gemini 2.5 Flash (Paid)', contextWindow: 1048576, speed: 'fast', vision: true },
             { id: 'openai/gpt-4.1-mini', name: 'GPT-4.1 Mini (Paid)', contextWindow: 1047576, speed: 'fast', vision: true },
         ],
@@ -91,9 +91,9 @@ const PROVIDERS = {
 
 // ── Timeout + Retry Configuration ──────────────────────────────────────────
 
-const CLOUD_TIMEOUT_MS = 30000; // 30 seconds for cloud APIs
-const OLLAMA_CLOUD_TIMEOUT_MS = 45000; // 45 seconds for Ollama Cloud (slower)
-const LOCAL_TIMEOUT_MS = 60000; // 60 seconds for local Ollama (slower)
+const CLOUD_TIMEOUT_MS = 15000; // 15 seconds for cloud APIs (interview speed)
+const OLLAMA_CLOUD_TIMEOUT_MS = 20000; // 20 seconds for Ollama Cloud
+const LOCAL_TIMEOUT_MS = 30000; // 30 seconds for local Ollama
 const MAX_RETRIES = 2; // 2 attempts per provider, then cascade
 const BASE_RETRY_DELAY_MS = 1000;
 
@@ -158,7 +158,7 @@ async function streamOpenAICompatible({ baseUrl, apiKey, model, messages, onToke
                     messages,
                     stream: true,
                     temperature: 0.7,
-                    max_tokens: isFreeModel ? 4096 : 2048,
+                    max_tokens: isFreeModel ? 4096 : 256,
                 }),
                 signal: controller.signal,
             });
@@ -325,8 +325,8 @@ async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken,
         try {
             // Separate system message from conversation
             const conversationMsgs = messages
-                .filter((m) => m.role !== 'system')
-                .map((m) => ({
+                .filter(m => m.role !== 'system')
+                .map(m => ({
                     role: m.role === 'assistant' ? 'assistant' : 'user',
                     content: m.content,
                 }));
@@ -340,7 +340,7 @@ async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken,
                 },
                 body: JSON.stringify({
                     model,
-                    max_tokens: 2048,
+                    max_tokens: 256,
                     system: systemPrompt || 'You are a helpful assistant.',
                     messages: conversationMsgs,
                     stream: true,
