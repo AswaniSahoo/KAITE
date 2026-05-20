@@ -1,18 +1,13 @@
 /**
  * Unified Text Response Provider System with Cascading Failover
  *
- * Strategy: Try the primary provider/model. If it fails (timeout, billing,
- * server error, anything), automatically cascade to the next provider in
- * the failover chain. The chain is ordered by quality and reliability:
- *
- *   1. Primary (user-selected or auto-detected)
- *   2. Gemini (Google SDK, free tier, vision + thinking)
- *   3. OpenRouter (free Gemma 4 models, paid premium)
- *   4. Ollama Cloud (free tier, Qwen 3.5 + Gemma 4 cloud)
- *   5. Local Ollama (offline fallback, never fails on billing)
+ * Provider chain (ordered by quality/reliability):
+ *   1. Anthropic (Claude - fast, high quality, paid)
+ *   2. OpenRouter (free Gemma 4 models + paid premium)
+ *   3. Gemini (Google SDK, free tier, vision + thinking)
  *
  * Every individual provider call gets:
- *   - AbortController timeout (30s cloud, 60s local)
+ *   - AbortController timeout (15s cloud)
  *   - No retry on 4xx (auth/billing won't self-fix)
  *   - Single retry on 5xx/timeout before cascading to next provider
  */
@@ -20,8 +15,6 @@
 const { GoogleGenAI } = require('@google/genai');
 
 // ── Provider & Model Registry ──────────────────────────────────────────────
-// Models are ordered by performance/quality within each provider.
-// The first model in each list is the default (best bang for buck).
 
 const PROVIDERS = {
     anthropic: {
@@ -29,34 +22,18 @@ const PROVIDERS = {
         baseUrl: 'https://api.anthropic.com/v1/messages',
         keyField: 'anthropicApiKey',
         models: [
-            // Haiku: ultra-low latency for real-time interview Q&A ($1/$5 per MTok)
             { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5 (Fast, Cheap)', contextWindow: 200000, speed: 'fastest', vision: true },
-            // Sonnet: higher quality for screen analysis / coding problems ($3/$15 per MTok)
             { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6 (Quality)', contextWindow: 200000, speed: 'medium', vision: true },
         ],
         defaultModel: 'claude-haiku-4-5-20251001',
-    },
-    gemini: {
-        name: 'Gemini (Google)',
-        baseUrl: null, // uses SDK, not raw HTTP
-        keyField: 'geminiApiKey',
-        models: [
-            // Free Flash models only (Pro is now paid-only since Apr 2026)
-            // Each model has its own daily quota, so we list two for failover
-            { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Free)', contextWindow: 1048576, speed: 'fast', vision: true },
-            { id: 'gemini-2.5-flash-lite-preview', name: 'Gemini 2.5 Flash Lite (Free)', contextWindow: 1048576, speed: 'fastest', vision: true },
-        ],
-        defaultModel: 'gemini-2.5-flash',
     },
     openrouter: {
         name: 'OpenRouter',
         baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
         keyField: 'openrouterApiKey',
         models: [
-            // Free vision models (no credits needed, reliable quality)
             { id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (Free, Vision)', contextWindow: 262144, speed: 'fast', vision: true },
             { id: 'google/gemma-4-27b-a4b-it:free', name: 'Gemma 4 26B MoE (Free, Fast)', contextWindow: 262144, speed: 'fastest', vision: true },
-            // Paid premium models (needs credits, highest accuracy)
             { id: 'anthropic/claude-sonnet-4.6', name: 'Claude Sonnet 4.6 (Paid)', contextWindow: 200000, speed: 'medium', vision: true },
             { id: 'anthropic/claude-haiku-4.5', name: 'Claude Haiku 4.5 (Paid)', contextWindow: 200000, speed: 'fastest', vision: true },
             { id: 'google/gemini-2.5-flash-preview', name: 'Gemini 2.5 Flash (Paid)', contextWindow: 1048576, speed: 'fast', vision: true },
@@ -64,37 +41,22 @@ const PROVIDERS = {
         ],
         defaultModel: 'google/gemma-4-31b-it:free',
     },
-    ollamaCloud: {
-        name: 'Ollama Cloud',
-        baseUrl: 'https://ollama.com/api/chat',
-        keyField: 'ollamaApiKey',
+    gemini: {
+        name: 'Gemini (Google)',
+        baseUrl: null,
+        keyField: 'geminiApiKey',
         models: [
-            // Free cloud models (vision + thinking, session limits reset every 5h)
-            { id: 'qwen3.5:cloud', name: 'Qwen 3.5 Cloud (Vision, Thinking)', contextWindow: 262144, speed: 'fast', vision: true },
-            { id: 'gemma4:31b-cloud', name: 'Gemma 4 31B Cloud (Vision)', contextWindow: 131072, speed: 'fast', vision: true },
-            { id: 'kimi-k2.5:cloud', name: 'Kimi K2.5 Cloud (Vision, Thinking)', contextWindow: 262144, speed: 'medium', vision: true },
+            { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Free)', contextWindow: 1048576, speed: 'fast', vision: true },
+            { id: 'gemini-2.5-flash-lite-preview', name: 'Gemini 2.5 Flash Lite (Free)', contextWindow: 1048576, speed: 'fastest', vision: true },
         ],
-        defaultModel: 'qwen3.5:cloud',
-    },
-    ollama: {
-        name: 'Ollama (Local)',
-        baseUrl: null, // resolved at runtime from preferences
-        keyField: null, // no API key needed
-        models: [
-            { id: 'gemma4:latest', name: 'Gemma 4 (9.6GB, Vision)', contextWindow: 131072, speed: 'medium', vision: true },
-            { id: 'gemma4:e2b', name: 'Gemma 4 E2B (Lite, Vision)', contextWindow: 131072, speed: 'fast', vision: true },
-            { id: 'gemma3:12b', name: 'Gemma 3 12B (Vision)', contextWindow: 131072, speed: 'medium', vision: true },
-        ],
-        defaultModel: 'gemma4:latest',
+        defaultModel: 'gemini-2.5-flash',
     },
 };
 
 // ── Timeout + Retry Configuration ──────────────────────────────────────────
 
-const CLOUD_TIMEOUT_MS = 15000; // 15 seconds for cloud APIs (interview speed)
-const OLLAMA_CLOUD_TIMEOUT_MS = 20000; // 20 seconds for Ollama Cloud
-const LOCAL_TIMEOUT_MS = 30000; // 30 seconds for local Ollama
-const MAX_RETRIES = 2; // 2 attempts per provider, then cascade
+const CLOUD_TIMEOUT_MS = 15000;
+const MAX_RETRIES = 2;
 const BASE_RETRY_DELAY_MS = 1000;
 
 // ── Utility ────────────────────────────────────────────────────────────────
@@ -123,19 +85,17 @@ function sleep(ms) {
 }
 
 function isNonRetryableError(errorMsg) {
-    // 4xx errors: auth, billing, forbidden, not found, rate limit
     return errorMsg && /API (40[0-9]|4[1-9][0-9])/.test(errorMsg);
 }
 
-// ── OpenAI-Compatible Streaming (Groq, OpenRouter) ────────────────────────
+// ── OpenAI-Compatible Streaming (OpenRouter) ─────────────────────────────
 
 async function streamOpenAICompatible({ baseUrl, apiKey, model, messages, onToken, onDone, onError, providerName }) {
     let lastError = null;
-    const timeoutMs = CLOUD_TIMEOUT_MS;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        const timeoutId = setTimeout(() => controller.abort(), CLOUD_TIMEOUT_MS);
 
         try {
             const headers = {
@@ -143,7 +103,6 @@ async function streamOpenAICompatible({ baseUrl, apiKey, model, messages, onToke
                 'Content-Type': 'application/json',
             };
 
-            // OpenRouter requires extra headers
             if (providerName === 'OpenRouter') {
                 headers['HTTP-Referer'] = 'https://github.com/AswaniSahoo/KAITE';
                 headers['X-Title'] = 'KAITE';
@@ -174,13 +133,15 @@ async function streamOpenAICompatible({ baseUrl, apiKey, model, messages, onToke
             const decoder = new TextDecoder();
             let fullText = '';
             let isFirst = true;
+            let leftover = '';
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n').filter(line => line.trim() !== '');
+                const chunk = leftover + decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
+                leftover = lines.pop() || '';
 
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
@@ -213,9 +174,8 @@ async function streamOpenAICompatible({ baseUrl, apiKey, model, messages, onToke
             lastError = error;
 
             const isTimeout = error.name === 'AbortError';
-            const errorMsg = isTimeout ? `${providerName} timed out (${timeoutMs / 1000}s)` : error.message;
+            const errorMsg = isTimeout ? `${providerName} timed out (${CLOUD_TIMEOUT_MS / 1000}s)` : error.message;
 
-            // 4xx errors won't fix themselves, bail immediately
             if (isNonRetryableError(error.message)) {
                 console.error(`[${providerName}] Non-retryable: ${errorMsg.substring(0, 100)}`);
                 break;
@@ -231,7 +191,6 @@ async function streamOpenAICompatible({ baseUrl, apiKey, model, messages, onToke
         }
     }
 
-    // All retries exhausted for this provider
     const finalError = `${providerName} failed: ${lastError?.message || 'Unknown error'}`;
     console.error(finalError);
     onError(finalError);
@@ -323,7 +282,6 @@ async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken,
         const timeoutId = setTimeout(() => controller.abort(), CLOUD_TIMEOUT_MS);
 
         try {
-            // Separate system message from conversation
             const conversationMsgs = messages
                 .filter(m => m.role !== 'system')
                 .map(m => ({
@@ -367,7 +325,6 @@ async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken,
 
                 const chunk = leftover + decoder.decode(value, { stream: true });
                 const lines = chunk.split('\n');
-                // Last line might be incomplete, save for next iteration
                 leftover = lines.pop() || '';
 
                 for (const line of lines) {
@@ -375,7 +332,6 @@ async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken,
                         const data = line.slice(6);
                         try {
                             const json = JSON.parse(data);
-                            // Anthropic SSE: content_block_delta has the text
                             if (json.type === 'content_block_delta' && json.delta?.text) {
                                 fullText += json.delta.text;
                                 onToken(fullText, isFirst);
@@ -388,7 +344,6 @@ async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken,
                 }
             }
 
-            // Process any remaining leftover
             if (leftover.startsWith('data: ')) {
                 try {
                     const json = JSON.parse(leftover.slice(6));
@@ -414,7 +369,6 @@ async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken,
             const isTimeout = error.name === 'AbortError';
             const errorMsg = isTimeout ? `Anthropic timed out (${CLOUD_TIMEOUT_MS / 1000}s)` : error.message;
 
-            // 4xx errors won't fix themselves, bail immediately
             if (isNonRetryableError(error.message)) {
                 console.error(`[Anthropic] Non-retryable: ${errorMsg.substring(0, 100)}`);
                 break;
@@ -436,156 +390,25 @@ async function streamAnthropic({ apiKey, model, messages, systemPrompt, onToken,
     return null;
 }
 
-// ── Ollama Streaming (Local + Cloud) ──────────────────────────────────────
-
-async function streamOllama({ host, model, messages, onToken, onDone, onError, apiKey, timeoutMs }) {
-    const baseUrl = host ? `${host}/api/chat` : 'http://127.0.0.1:11434/api/chat';
-    const timeout = timeoutMs || LOCAL_TIMEOUT_MS;
-    let lastError = null;
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-        try {
-            const headers = { 'Content-Type': 'application/json' };
-            if (apiKey) {
-                headers['Authorization'] = `Bearer ${apiKey}`;
-            }
-
-            const response = await fetch(baseUrl, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                    model,
-                    messages,
-                    stream: true,
-                }),
-                signal: controller.signal,
-            });
-
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Ollama ${response.status}: ${errorText.substring(0, 200)}`);
-            }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let fullText = '';
-            let isFirst = true;
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n').filter(line => line.trim() !== '');
-
-                for (const line of lines) {
-                    try {
-                        const json = JSON.parse(line);
-                        const token = json.message?.content || '';
-                        if (token) {
-                            fullText += token;
-                            onToken(fullText, isFirst);
-                            isFirst = false;
-                        }
-                    } catch (_parseError) {
-                        // Skip invalid JSON
-                    }
-                }
-            }
-
-            if (fullText.trim()) {
-                onDone(fullText.trim());
-                return fullText.trim();
-            }
-
-            onDone('');
-            return '';
-        } catch (error) {
-            clearTimeout(timeoutId);
-            lastError = error;
-
-            const isTimeout = error.name === 'AbortError';
-            const label = apiKey ? 'Ollama Cloud' : 'Ollama';
-            const errorMsg = isTimeout ? `${label} timed out (${timeout / 1000}s)` : error.message;
-            console.error(`[${label}] Attempt ${attempt}/${MAX_RETRIES} failed: ${errorMsg}`);
-
-            if (attempt < MAX_RETRIES) {
-                await sleep(BASE_RETRY_DELAY_MS);
-            }
-        }
-    }
-
-    const label = apiKey ? 'Ollama Cloud' : 'Ollama';
-    const finalError = `${label} failed: ${lastError?.message || 'Unknown error'}`;
-    console.error(finalError);
-    onError(finalError);
-    return null;
-}
-
 // ── Single Provider Dispatch ──────────────────────────────────────────────
 
-async function callSingleProvider(provider, model, apiKey, messages, systemPrompt, onToken, onDone, onError, ollamaHost) {
+async function callSingleProvider(provider, model, apiKey, messages, systemPrompt, onToken, onDone, onError) {
     const providerConfig = PROVIDERS[provider];
     if (!providerConfig) {
         onError(`Unknown provider: ${provider}`);
         return null;
     }
 
-    if (provider === 'ollama') {
-        return streamOllama({
-            host: ollamaHost,
-            model,
-            messages,
-            onToken,
-            onDone,
-            onError,
-        });
-    }
-
     if (provider === 'anthropic') {
-        return streamAnthropic({
-            apiKey,
-            model,
-            messages,
-            systemPrompt,
-            onToken,
-            onDone,
-            onError,
-        });
+        return streamAnthropic({ apiKey, model, messages, systemPrompt, onToken, onDone, onError });
     }
 
     if (provider === 'gemini') {
         const historyMsgs = messages.filter(m => m.role !== 'system');
-        return streamGeminiSDK({
-            apiKey,
-            model,
-            messages: historyMsgs,
-            systemPrompt,
-            onToken,
-            onDone,
-            onError,
-        });
+        return streamGeminiSDK({ apiKey, model, messages: historyMsgs, systemPrompt, onToken, onDone, onError });
     }
 
-    if (provider === 'ollamaCloud') {
-        return streamOllama({
-            host: 'https://ollama.com',
-            model,
-            messages,
-            onToken,
-            onDone,
-            onError,
-            apiKey,
-            timeoutMs: OLLAMA_CLOUD_TIMEOUT_MS,
-        });
-    }
-
-    // OpenAI-compatible (OpenRouter)
+    // OpenRouter (OpenAI-compatible)
     return streamOpenAICompatible({
         baseUrl: providerConfig.baseUrl,
         apiKey,
@@ -600,29 +423,17 @@ async function callSingleProvider(provider, model, apiKey, messages, systemPromp
 
 // ── Cascading Failover Dispatch ───────────────────────────────────────────
 
-/**
- * Build the failover chain. The primary provider goes first, then all
- * others that have valid API keys, ending with local Ollama.
- *
- * @param {string} primaryProvider - User's selected provider
- * @param {object} apiKeys - { openrouter, gemini, ollamaCloud } key strings
- * @param {string} ollamaHost - Ollama host URL
- * @returns {Array<{provider, model, apiKey}>} Ordered failover chain
- */
-function buildFailoverChain(primaryProvider, primaryModel, apiKeys, ollamaHost) {
+function buildFailoverChain(primaryProvider, primaryModel, apiKeys) {
     const chain = [];
 
-    // Priority order: Anthropic (fast+paid) -> OpenRouter (free) -> Gemini (free) -> Ollama Cloud -> Local
     const providerOrder = [
         { key: 'anthropic', model: PROVIDERS.anthropic.defaultModel },
         { key: 'openrouter', model: PROVIDERS.openrouter.defaultModel },
         { key: 'gemini', model: PROVIDERS.gemini.defaultModel },
-        { key: 'ollamaCloud', model: PROVIDERS.ollamaCloud.defaultModel },
-        { key: 'ollama', model: PROVIDERS.ollama.defaultModel },
     ];
 
     // Primary goes first with user-selected model
-    if (primaryProvider && primaryProvider !== 'ollama') {
+    if (primaryProvider) {
         const key = apiKeys[primaryProvider] || '';
         if (key) {
             chain.push({
@@ -633,23 +444,9 @@ function buildFailoverChain(primaryProvider, primaryModel, apiKeys, ollamaHost) 
         }
     }
 
-    if (primaryProvider === 'ollama') {
-        chain.push({
-            provider: 'ollama',
-            model: primaryModel || PROVIDERS.ollama.defaultModel,
-            apiKey: null,
-        });
-    }
-
-    // Add remaining providers as fallbacks (skip the primary since it's already first)
+    // Add remaining providers as fallbacks
     for (const entry of providerOrder) {
-        if (entry.key === primaryProvider) continue; // already in chain
-
-        if (entry.key === 'ollama') {
-            // Ollama always available as last resort (no key needed)
-            chain.push({ provider: 'ollama', model: entry.model, apiKey: null });
-            continue;
-        }
+        if (entry.key === primaryProvider) continue;
 
         const key = apiKeys[entry.key] || '';
         if (key) {
@@ -660,27 +457,18 @@ function buildFailoverChain(primaryProvider, primaryModel, apiKeys, ollamaHost) 
     return chain;
 }
 
-/**
- * Send transcription with cascading failover.
- * Tries each provider in the chain until one succeeds.
- *
- * @param {string} transcription - Text to send
- * @param {object} opts - All options
- * @returns {Promise<{text: string|null, provider: string, model: string}>}
- */
 async function sendToProvider(transcription, opts) {
     const {
         provider: primaryProvider,
         model: primaryModel,
         apiKey: primaryApiKey,
-        apiKeys, // { openrouter, gemini, ollamaCloud }
+        apiKeys,
         systemPrompt,
         conversationHistory,
         onToken,
         onDone,
         onError,
-        onStatus, // optional: called with status updates
-        ollamaHost,
+        onStatus,
     } = opts;
 
     if (!transcription || transcription.trim() === '') {
@@ -688,30 +476,26 @@ async function sendToProvider(transcription, opts) {
         return { text: null, provider: null, model: null };
     }
 
-    // Build failover chain
     const allKeys = apiKeys || {
         openrouter: '',
         gemini: '',
-        ollamaCloud: '',
         [primaryProvider]: primaryApiKey || '',
     };
 
-    const chain = buildFailoverChain(primaryProvider, primaryModel, allKeys, ollamaHost);
+    const chain = buildFailoverChain(primaryProvider, primaryModel, allKeys);
 
     if (chain.length === 0) {
-        const msg = 'No API keys configured and Ollama not available';
+        const msg = 'No API keys configured. Add an Anthropic, OpenRouter, or Gemini key in Settings.';
         onError(msg);
         return { text: null, provider: null, model: null };
     }
 
-    // Build messages array
     const messages = [
         { role: 'system', content: systemPrompt || 'You are a helpful assistant.' },
         ...trimConversationHistory(conversationHistory, 42000),
         { role: 'user', content: transcription.trim() },
     ];
 
-    // Try each provider in the chain
     for (let i = 0; i < chain.length; i++) {
         const { provider, model, apiKey } = chain[i];
         const isLast = i === chain.length - 1;
@@ -724,29 +508,25 @@ async function sendToProvider(transcription, opts) {
         let succeeded = false;
         let resultText = null;
 
-        const result = await callSingleProvider(
+        await callSingleProvider(
             provider,
             model,
             apiKey,
             messages,
             systemPrompt,
-            // onToken: forward to caller
             (displayText, isFirst) => {
                 onToken(displayText, isFirst);
             },
-            // onDone: mark success
             cleanedResponse => {
                 succeeded = true;
                 resultText = cleanedResponse;
             },
-            // onError: log but don't propagate unless it's the last provider
             errorMsg => {
                 console.error(`[Failover] ${provider}/${model} failed: ${errorMsg}`);
                 if (isLast) {
                     onError(`All providers failed. Last error: ${errorMsg}`);
                 }
-            },
-            ollamaHost
+            }
         );
 
         if (succeeded && resultText) {
@@ -755,11 +535,9 @@ async function sendToProvider(transcription, opts) {
             return { text: resultText, provider, model };
         }
 
-        // If we got here, this provider failed. Try the next one.
         if (!isLast) {
             console.log(`[Failover] Cascading to next provider...`);
             statusFn(`${PROVIDERS[provider]?.name} failed, trying next...`);
-            // Brief pause before switching
             await sleep(300);
         }
     }
@@ -776,7 +554,5 @@ module.exports = {
     trimConversationHistory,
     stripThinkingTags,
     CLOUD_TIMEOUT_MS,
-    OLLAMA_CLOUD_TIMEOUT_MS,
-    LOCAL_TIMEOUT_MS,
     MAX_RETRIES,
 };

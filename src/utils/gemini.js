@@ -7,29 +7,18 @@ const {
     getAvailableModel,
     incrementLimitCount,
     getApiKey,
-    getGroqApiKey,
     getOpenrouterApiKey,
-    getOllamaCloudApiKey,
     getAnthropicApiKey,
-    incrementCharUsage,
-    getModelForToday,
     getPreferences,
 } = require('../storage');
 const { connectCloud, sendCloudAudio, sendCloudText, sendCloudImage, closeCloud, isCloudActive, setOnTurnComplete } = require('./cloud');
-const { PROVIDERS, sendToProvider, CLOUD_TIMEOUT_MS, LOCAL_TIMEOUT_MS, buildFailoverChain } = require('./providers');
+const { PROVIDERS, sendToProvider, CLOUD_TIMEOUT_MS, buildFailoverChain } = require('./providers');
 
-// Lazy-loaded to avoid circular dependency (localai.js imports from gemini.js)
-let _localai = null;
-function getLocalAi() {
-    if (!_localai) _localai = require('./localai');
-    return _localai;
-}
-
-// Provider mode: 'byok', 'cloud', or 'local'
+// Provider mode: 'byok' or 'cloud'
 let currentProviderMode = 'byok';
 
-// Groq conversation history for context
-let groqConversationHistory = [];
+// Conversation history for text provider context
+let conversationCtxHistory = [];
 
 // Conversation tracking variables
 let currentSessionId = null;
@@ -138,7 +127,7 @@ function initializeNewSession(profile = null, customPrompt = null) {
     currentTranscription = '';
     conversationHistory = [];
     screenAnalysisHistory = [];
-    groqConversationHistory = [];
+    conversationCtxHistory = [];
     currentProfile = profile;
     currentCustomPrompt = customPrompt;
     console.log('New conversation session started:', currentSessionId, 'profile:', profile);
@@ -257,18 +246,6 @@ async function getStoredSetting(key, defaultValue) {
     return defaultValue;
 }
 
-// helper to check if groq has been configured
-function hasGroqKey() {
-    const key = getGroqApiKey();
-    return key && key.trim() != '';
-}
-
-/**
- * Dispatch transcription with cascading failover.
- * Reads provider/model from preferences, gathers ALL API keys,
- * and lets the provider system cascade through them if one fails.
- * Failover order: primary -> groq -> openrouter -> gemini -> ollama (local)
- */
 /**
  * Check if a transcription is mostly English / Latin-script text.
  * Returns false for noise markers, non-Latin scripts, and very short gibberish.
@@ -398,25 +375,17 @@ async function dispatchToTextProvider(transcription) {
         anthropic: getAnthropicApiKey(),
         openrouter: getOpenrouterApiKey(),
         gemini: getApiKey(),
-        ollamaCloud: getOllamaCloudApiKey(),
     };
 
     // Pick primary provider: user's choice, or first available from chain
     if (!provider || !apiKeys[provider]) {
-        const chain = ['anthropic', 'openrouter', 'gemini', 'ollamaCloud', 'ollama'];
-        provider = chain.find(p => p === 'ollama' || apiKeys[p]) || 'ollama';
+        const chain = ['anthropic', 'openrouter', 'gemini'];
+        provider = chain.find(p => apiKeys[p]) || 'gemini';
     }
 
     // Resolve model for selected provider
     if (!model && PROVIDERS[provider]) {
         model = PROVIDERS[provider].defaultModel;
-    }
-
-    const ollamaHost = prefs.ollamaHost || 'http://localhost:11434';
-    const ollamaModel = prefs.ollamaModel || 'gemma4';
-
-    if (provider === 'ollama') {
-        model = ollamaModel;
     }
 
     try {
@@ -431,18 +400,17 @@ async function dispatchToTextProvider(transcription) {
             apiKey: apiKeys[provider] || '',
             apiKeys,
             systemPrompt: currentSystemPrompt || 'You are a helpful assistant.',
-            conversationHistory: groqConversationHistory,
-            ollamaHost,
+            conversationHistory: conversationCtxHistory,
             onToken: (displayText, isFirst) => {
                 sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
             },
             onDone: cleanedResponse => {
                 if (cleanedResponse) {
-                    groqConversationHistory.push({ role: 'user', content: cleanedTranscription });
-                    groqConversationHistory.push({ role: 'assistant', content: cleanedResponse });
+                    conversationCtxHistory.push({ role: 'user', content: cleanedTranscription });
+                    conversationCtxHistory.push({ role: 'assistant', content: cleanedResponse });
 
-                    if (groqConversationHistory.length > 40) {
-                        groqConversationHistory = groqConversationHistory.slice(-40);
+                    if (conversationCtxHistory.length > 40) {
+                        conversationCtxHistory = conversationCtxHistory.slice(-40);
                     }
 
                     saveConversationTurn(cleanedTranscription, cleanedResponse);
@@ -451,7 +419,7 @@ async function dispatchToTextProvider(transcription) {
             },
             onError: errorMsg => {
                 console.error('All providers failed:', errorMsg);
-                sendToRenderer('update-status', 'All providers failed. Check your API keys or start Ollama.');
+                sendToRenderer('update-status', 'All providers failed. Check your API keys.');
             },
             onStatus: statusMsg => {
                 sendToRenderer('update-status', statusMsg);
@@ -473,220 +441,8 @@ async function dispatchToTextProvider(transcription) {
     }
 }
 
-function trimConversationHistoryForGemma(history, maxChars = 42000) {
-    if (!history || history.length === 0) return [];
-    let totalChars = 0;
-    const trimmed = [];
-
-    for (let i = history.length - 1; i >= 0; i--) {
-        const turn = history[i];
-        const turnChars = (turn.content || '').length;
-
-        if (totalChars + turnChars > maxChars) break;
-        totalChars += turnChars;
-        trimmed.unshift(turn);
-    }
-    return trimmed;
-}
-
 function stripThinkingTags(text) {
     return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-}
-
-async function sendToGroq(transcription) {
-    const groqApiKey = getGroqApiKey();
-    if (!groqApiKey) {
-        console.log('No Groq API key configured, skipping Groq response');
-        return;
-    }
-
-    if (!transcription || transcription.trim() === '') {
-        console.log('Empty transcription, skipping Groq');
-        return;
-    }
-
-    const modelToUse = getModelForToday();
-    if (!modelToUse) {
-        console.log('All Groq daily limits exhausted');
-        sendToRenderer('update-status', 'Groq limits reached for today');
-        return;
-    }
-
-    console.log(`Sending to Groq (${modelToUse}):`, transcription.substring(0, 100) + '...');
-
-    groqConversationHistory.push({
-        role: 'user',
-        content: transcription.trim(),
-    });
-
-    if (groqConversationHistory.length > 20) {
-        groqConversationHistory = groqConversationHistory.slice(-20);
-    }
-
-    try {
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${groqApiKey}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                model: modelToUse,
-                messages: [{ role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' }, ...groqConversationHistory],
-                stream: true,
-                temperature: 0.7,
-                max_tokens: 1024,
-            }),
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Groq API error:', response.status, errorText);
-            sendToRenderer('update-status', `Groq error: ${response.status}`);
-            return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        let isFirst = true;
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n').filter(line => line.trim() !== '');
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const data = line.slice(6);
-                    if (data === '[DONE]') continue;
-
-                    try {
-                        const json = JSON.parse(data);
-                        const token = json.choices?.[0]?.delta?.content || '';
-                        if (token) {
-                            fullText += token;
-                            const displayText = stripThinkingTags(fullText);
-                            if (displayText) {
-                                sendToRenderer(isFirst ? 'new-response' : 'update-response', displayText);
-                                isFirst = false;
-                            }
-                        }
-                    } catch (parseError) {
-                        // Skip invalid JSON chunks
-                    }
-                }
-            }
-        }
-
-        const cleanedResponse = stripThinkingTags(fullText);
-        const modelKey = modelToUse.split('/').pop();
-
-        const systemPromptChars = (currentSystemPrompt || 'You are a helpful assistant.').length;
-        const historyChars = groqConversationHistory.reduce((sum, msg) => sum + (msg.content || '').length, 0);
-        const inputChars = systemPromptChars + historyChars;
-        const outputChars = cleanedResponse.length;
-
-        incrementCharUsage('groq', modelKey, inputChars + outputChars);
-
-        if (cleanedResponse) {
-            groqConversationHistory.push({
-                role: 'assistant',
-                content: cleanedResponse,
-            });
-
-            saveConversationTurn(transcription, cleanedResponse);
-        }
-
-        console.log(`Groq response completed (${modelToUse})`);
-        sendToRenderer('update-status', 'Listening...');
-    } catch (error) {
-        console.error('Error calling Groq API:', error);
-        sendToRenderer('update-status', 'Groq error: ' + error.message);
-    }
-}
-
-async function sendToGemma(transcription) {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-        console.log('No Gemini API key configured');
-        return;
-    }
-
-    if (!transcription || transcription.trim() === '') {
-        console.log('Empty transcription, skipping Gemma');
-        return;
-    }
-
-    console.log('Sending to Gemma:', transcription.substring(0, 100) + '...');
-
-    groqConversationHistory.push({
-        role: 'user',
-        content: transcription.trim(),
-    });
-
-    const trimmedHistory = trimConversationHistoryForGemma(groqConversationHistory, 42000);
-
-    try {
-        const ai = new GoogleGenAI({ apiKey: apiKey });
-
-        const messages = trimmedHistory.map(msg => ({
-            role: msg.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: msg.content }],
-        }));
-
-        const systemPrompt = currentSystemPrompt || 'You are a helpful assistant.';
-        const messagesWithSystem = [
-            { role: 'user', parts: [{ text: systemPrompt }] },
-            { role: 'model', parts: [{ text: 'Understood. I will follow these instructions.' }] },
-            ...messages,
-        ];
-
-        const response = await ai.models.generateContentStream({
-            model: 'gemma-3-27b-it',
-            contents: messagesWithSystem,
-        });
-
-        let fullText = '';
-        let isFirst = true;
-
-        for await (const chunk of response) {
-            const chunkText = chunk.text;
-            if (chunkText) {
-                fullText += chunkText;
-                sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
-                isFirst = false;
-            }
-        }
-
-        const systemPromptChars = (currentSystemPrompt || 'You are a helpful assistant.').length;
-        const historyChars = trimmedHistory.reduce((sum, msg) => sum + (msg.content || '').length, 0);
-        const inputChars = systemPromptChars + historyChars;
-        const outputChars = fullText.length;
-
-        incrementCharUsage('gemini', 'gemma-3-27b-it', inputChars + outputChars);
-
-        if (fullText.trim()) {
-            groqConversationHistory.push({
-                role: 'assistant',
-                content: fullText.trim(),
-            });
-
-            if (groqConversationHistory.length > 40) {
-                groqConversationHistory = groqConversationHistory.slice(-40);
-            }
-
-            saveConversationTurn(transcription, fullText);
-        }
-
-        console.log('Gemma response completed');
-        sendToRenderer('update-status', 'Listening...');
-    } catch (error) {
-        console.error('Error calling Gemma API:', error);
-        sendToRenderer('update-status', 'Gemma error: ' + error.message);
-    }
 }
 
 async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'interview', language = 'en-US', isReconnect = false) {
@@ -882,7 +638,7 @@ async function attemptReconnect() {
     // Clear stale buffers
     messageBuffer = '';
     currentTranscription = '';
-    // Don't reset groqConversationHistory to preserve context across reconnects
+    // Don't reset conversationCtxHistory to preserve context across reconnects
 
     sendToRenderer('update-status', `Reconnecting... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 
@@ -1022,8 +778,6 @@ async function startMacOSAudioCapture(geminiSessionRef) {
 
             if (currentProviderMode === 'cloud') {
                 sendCloudAudio(monoChunk);
-            } else if (currentProviderMode === 'local') {
-                getLocalAi().processLocalAudio(monoChunk);
             } else {
                 const base64Data = monoChunk.toString('base64');
                 sendAudioToGemini(base64Data, geminiSessionRef);
@@ -1094,7 +848,7 @@ async function sendAudioToGemini(base64Data, geminiSessionRef) {
     }
 }
 
-async function sendImageWithFailover(base64Data, prompt) {
+async function sendImageWithFailover(base64Data, prompt, isMultiCapture = false) {
     const prefs = getPreferences();
     const provider = prefs.textProvider || 'gemini';
     const model = prefs.textModel || 'gemini-2.5-flash';
@@ -1103,7 +857,6 @@ async function sendImageWithFailover(base64Data, prompt) {
         anthropic: getAnthropicApiKey() || '',
         openrouter: getOpenrouterApiKey() || '',
         gemini: getApiKey() || '',
-        ollamaCloud: getOllamaCloudApiKey() || '',
     };
 
     // For screen analysis, prefer Anthropic Sonnet (highest vision quality)
@@ -1148,10 +901,6 @@ async function sendImageWithFailover(base64Data, prompt) {
                 result = await sendImageViaGeminiSDK(base64Data, prompt, visionModel, step.apiKey);
             } else if (step.provider === 'openrouter') {
                 result = await sendImageViaOpenAI(base64Data, prompt, visionModel, step.apiKey, step.provider);
-            } else if (step.provider === 'ollamaCloud') {
-                result = await sendImageViaOllamaCloud(base64Data, prompt, visionModel, step.apiKey);
-            } else if (step.provider === 'ollama') {
-                result = await sendImageViaOllama(base64Data, prompt, visionModel);
             }
 
             if (result && result.success) {
@@ -1199,27 +948,6 @@ async function sendImageWithFailover(base64Data, prompt) {
                 }
             }
 
-            // Local Ollama model-level failover: when main model OOMs or 500s, try lighter models
-            if (
-                step.provider === 'ollama' &&
-                (error.message.includes('500') || error.message.includes('memory') || error.message.includes('not found'))
-            ) {
-                const otherModels = providerConfig.models.filter(m => m.vision && m.id !== visionModel);
-                for (const alt of otherModels) {
-                    try {
-                        console.log(`[Image] Ollama ${visionModel} failed, trying lighter: ${alt.id}...`);
-                        sendToRenderer('update-status', `Switching to ${alt.name}...`);
-                        const altResult = await sendImageViaOllama(base64Data, prompt, alt.id);
-                        if (altResult && altResult.success) {
-                            saveScreenAnalysis(prompt, altResult.text, `ollama/${alt.id}`);
-                            return altResult;
-                        }
-                    } catch (altError) {
-                        console.error(`[Image] ollama/${alt.id} also failed: ${altError.message}`);
-                    }
-                }
-            }
-
             if (isLast) {
                 sendToRenderer('update-status', 'All image providers failed');
                 return { success: false, error: `All providers failed. Last: ${error.message}` };
@@ -1228,14 +956,28 @@ async function sendImageWithFailover(base64Data, prompt) {
     }
     return { success: false, error: 'No providers available' };
 }
-// Anthropic Claude vision
+// Anthropic Claude vision (supports single or multiple images)
 async function sendImageViaAnthropic(base64Data, prompt, model, apiKey) {
-    const timeoutMs = CLOUD_TIMEOUT_MS || 30000;
+    const images = Array.isArray(base64Data) ? base64Data : [base64Data];
+    const timeoutMs = (images.length > 1 ? CLOUD_TIMEOUT_MS * 2 : CLOUD_TIMEOUT_MS) || 30000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
         const systemPrompt = currentSystemPrompt || 'You are a helpful assistant.';
+
+        const contentParts = [];
+        for (const img of images) {
+            contentParts.push({
+                type: 'image',
+                source: {
+                    type: 'base64',
+                    media_type: 'image/jpeg',
+                    data: img,
+                },
+            });
+        }
+        contentParts.push({ type: 'text', text: prompt });
 
         const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -1248,25 +990,7 @@ async function sendImageViaAnthropic(base64Data, prompt, model, apiKey) {
                 model,
                 max_tokens: 4096,
                 system: systemPrompt,
-                messages: [
-                    {
-                        role: 'user',
-                        content: [
-                            {
-                                type: 'image',
-                                source: {
-                                    type: 'base64',
-                                    media_type: 'image/jpeg',
-                                    data: base64Data,
-                                },
-                            },
-                            {
-                                type: 'text',
-                                text: prompt,
-                            },
-                        ],
-                    },
-                ],
+                messages: [{ role: 'user', content: contentParts }],
                 stream: true,
             }),
             signal: controller.signal,
@@ -1319,16 +1043,21 @@ async function sendImageViaAnthropic(base64Data, prompt, model, apiKey) {
     }
 }
 
-// Gemini SDK vision
+// Gemini SDK vision (supports single or multiple images)
 async function sendImageViaGeminiSDK(base64Data, prompt, model, apiKey) {
+    const images = Array.isArray(base64Data) ? base64Data : [base64Data];
     const ai = new GoogleGenAI({ apiKey });
-    const timeoutMs = CLOUD_TIMEOUT_MS || 30000;
+    const timeoutMs = (images.length > 1 ? CLOUD_TIMEOUT_MS * 2 : CLOUD_TIMEOUT_MS) || 30000;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-        const contents = [{ inlineData: { mimeType: 'image/jpeg', data: base64Data } }, { text: prompt }];
+        const contents = [];
+        for (const img of images) {
+            contents.push({ inlineData: { mimeType: 'image/jpeg', data: img } });
+        }
+        contents.push({ text: prompt });
 
         console.log(`Sending image to ${model} (streaming)...`);
         const response = await ai.models.generateContentStream({ model, contents });
@@ -1352,10 +1081,11 @@ async function sendImageViaGeminiSDK(base64Data, prompt, model, apiKey) {
     }
 }
 
-// OpenAI-compatible vision (OpenRouter, Groq)
+// OpenRouter vision (OpenAI-compatible) - supports single or multiple images
 async function sendImageViaOpenAI(base64Data, prompt, model, apiKey, provider) {
-    const baseUrl = provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
-    const timeoutMs = CLOUD_TIMEOUT_MS || 30000;
+    const images = Array.isArray(base64Data) ? base64Data : [base64Data];
+    const baseUrl = 'https://openrouter.ai/api/v1/chat/completions';
+    const timeoutMs = (images.length > 1 ? CLOUD_TIMEOUT_MS * 2 : CLOUD_TIMEOUT_MS) || 30000;
 
     const headers = {
         'Content-Type': 'application/json',
@@ -1366,17 +1096,15 @@ async function sendImageViaOpenAI(base64Data, prompt, model, apiKey, provider) {
         headers['X-Title'] = 'KAITE';
     }
 
+    const contentParts = [];
+    for (const img of images) {
+        contentParts.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${img}` } });
+    }
+    contentParts.push({ type: 'text', text: prompt });
+
     const body = {
         model,
-        messages: [
-            {
-                role: 'user',
-                content: [
-                    { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Data}` } },
-                    { type: 'text', text: prompt },
-                ],
-            },
-        ],
+        messages: [{ role: 'user', content: contentParts }],
         stream: true,
         max_tokens: 2048,
     };
@@ -1438,127 +1166,6 @@ async function sendImageViaOpenAI(base64Data, prompt, model, apiKey, provider) {
     return { success: true, text: stripThinkingTags(fullText), model };
 }
 
-// Ollama local vision
-async function sendImageViaOllama(base64Data, prompt, model) {
-    const timeoutMs = LOCAL_TIMEOUT_MS || 60000;
-    const ollamaUrl = 'http://127.0.0.1:11434/api/generate';
-
-    let response;
-    try {
-        response = await fetch(ollamaUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model,
-                prompt,
-                images: [base64Data],
-                stream: true,
-            }),
-            signal: AbortSignal.timeout(timeoutMs),
-        });
-    } catch (fetchError) {
-        // Connection refused = Ollama not running
-        if (fetchError.message.includes('fetch failed') || fetchError.message.includes('ECONNREFUSED')) {
-            throw new Error('Ollama is not running. Open a terminal and run: ollama serve');
-        }
-        throw fetchError;
-    }
-
-    if (!response.ok) {
-        if (response.status === 500) {
-            const errBody = await response.text().catch(() => '');
-            if (errBody.includes('not found') || errBody.includes('pull')) {
-                throw new Error(`Model "${model}" not found. Run: ollama pull ${model}`);
-            }
-            throw new Error(`Ollama error (500): ${errBody.substring(0, 100) || 'Model may not be loaded. Run: ollama pull ' + model}`);
-        }
-        throw new Error(`Ollama HTTP ${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-    let isFirst = true;
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n').filter(line => line.trim() !== '');
-
-        for (const line of lines) {
-            try {
-                const parsed = JSON.parse(line);
-                if (parsed.response) {
-                    fullText += parsed.response;
-                    sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
-                    isFirst = false;
-                }
-            } catch {
-                // skip malformed chunks
-            }
-        }
-    }
-
-    if (!fullText) throw new Error('Empty response from Ollama vision');
-    console.log(`Image response completed from ollama/${model}`);
-    return { success: true, text: fullText, model };
-}
-
-// Ollama Cloud vision (same API format as local, different host + auth)
-async function sendImageViaOllamaCloud(base64Data, prompt, model, apiKey) {
-    const timeoutMs = CLOUD_TIMEOUT_MS || 30000;
-    const cloudUrl = 'https://ollama.com/api/generate';
-
-    const response = await fetch(cloudUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-            model,
-            prompt,
-            images: [base64Data],
-            stream: true,
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
-    });
-
-    if (!response.ok) throw new Error(`Ollama Cloud HTTP ${response.status}`);
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-    let isFirst = true;
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n').filter(line => line.trim() !== '');
-
-        for (const line of lines) {
-            try {
-                const parsed = JSON.parse(line);
-                if (parsed.response) {
-                    fullText += parsed.response;
-                    sendToRenderer(isFirst ? 'new-response' : 'update-response', fullText);
-                    isFirst = false;
-                }
-            } catch {
-                // skip malformed chunks
-            }
-        }
-    }
-
-    if (!fullText) throw new Error('Empty response from Ollama Cloud vision');
-    console.log(`Image response completed from ollamaCloud/${model}`);
-    return { success: true, text: fullText, model };
-}
-
 function setupGeminiIpcHandlers(geminiSessionRef) {
     // Store the geminiSessionRef globally for reconnection access
     global.geminiSessionRef = geminiSessionRef;
@@ -1592,15 +1199,6 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         return false;
     });
 
-    ipcMain.handle('initialize-local', async (event, ollamaHost, ollamaModel, whisperModel, profile, customPrompt) => {
-        currentProviderMode = 'local';
-        const success = await getLocalAi().initializeLocalSession(ollamaHost, ollamaModel, whisperModel, profile, customPrompt);
-        if (!success) {
-            currentProviderMode = 'byok';
-        }
-        return success;
-    });
-
     ipcMain.handle('send-audio-content', async (event, { data, mimeType }) => {
         if (currentProviderMode === 'cloud') {
             try {
@@ -1609,16 +1207,6 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
                 return { success: true };
             } catch (error) {
                 console.error('Error sending cloud audio:', error);
-                return { success: false, error: error.message };
-            }
-        }
-        if (currentProviderMode === 'local') {
-            try {
-                const pcmBuffer = Buffer.from(data, 'base64');
-                getLocalAi().processLocalAudio(pcmBuffer);
-                return { success: true };
-            } catch (error) {
-                console.error('Error sending local audio:', error);
                 return { success: false, error: error.message };
             }
         }
@@ -1635,7 +1223,6 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         }
     });
 
-    // Handle microphone audio on a separate channel
     ipcMain.handle('send-mic-audio-content', async (event, { data, mimeType }) => {
         if (currentProviderMode === 'cloud') {
             try {
@@ -1644,16 +1231,6 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
                 return { success: true };
             } catch (error) {
                 console.error('Error sending cloud mic audio:', error);
-                return { success: false, error: error.message };
-            }
-        }
-        if (currentProviderMode === 'local') {
-            try {
-                const pcmBuffer = Buffer.from(data, 'base64');
-                getLocalAi().processLocalAudio(pcmBuffer);
-                return { success: true };
-            } catch (error) {
-                console.error('Error sending local mic audio:', error);
                 return { success: false, error: error.message };
             }
         }
@@ -1670,8 +1247,34 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         }
     });
 
-    ipcMain.handle('send-image-content', async (event, { data, prompt }) => {
+    ipcMain.handle('send-image-content', async (event, { data, prompt, isMultiCapture }) => {
         try {
+            // Multi-capture: data is an array of base64 strings
+            if (isMultiCapture && Array.isArray(data)) {
+                console.log(`Multi-capture: processing ${data.length} images`);
+
+                // Validate all images
+                for (let i = 0; i < data.length; i++) {
+                    if (!data[i] || typeof data[i] !== 'string') {
+                        return { success: false, error: `Invalid image data at index ${i}` };
+                    }
+                    const buf = Buffer.from(data[i], 'base64');
+                    if (buf.length < 1000) {
+                        return { success: false, error: `Image ${i + 1} too small (${buf.length} bytes)` };
+                    }
+                }
+
+                if (currentProviderMode === 'cloud') {
+                    const sent = sendCloudImage(data[data.length - 1]);
+                    if (!sent) return { success: false, error: 'Cloud connection not active' };
+                    return { success: true, model: 'cloud' };
+                }
+
+                const result = await sendImageWithFailover(data, prompt, true);
+                return result;
+            }
+
+            // Single image: original behavior
             if (!data || typeof data !== 'string') {
                 console.error('Invalid image data received');
                 return { success: false, error: 'Invalid image data' };
@@ -1694,12 +1297,7 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
                 return { success: true, model: 'cloud' };
             }
 
-            if (currentProviderMode === 'local') {
-                const result = await getLocalAi().sendLocalImage(data, prompt);
-                return result;
-            }
-
-            // Use failover-aware image analysis (respects provider selection)
+            // Use failover-aware image analysis
             const result = await sendImageWithFailover(data, prompt);
             return result;
         } catch (error) {
@@ -1720,16 +1318,6 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
                 return { success: true };
             } catch (error) {
                 console.error('Error sending cloud text:', error);
-                return { success: false, error: error.message };
-            }
-        }
-
-        if (currentProviderMode === 'local') {
-            try {
-                console.log('Sending text to local Ollama:', text);
-                return await getLocalAi().sendLocalText(text.trim());
-            } catch (error) {
-                console.error('Error sending local text:', error);
                 return { success: false, error: error.message };
             }
         }
@@ -1782,12 +1370,6 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
 
             if (currentProviderMode === 'cloud') {
                 closeCloud();
-                currentProviderMode = 'byok';
-                return { success: true };
-            }
-
-            if (currentProviderMode === 'local') {
-                getLocalAi().closeLocalSession();
                 currentProviderMode = 'byok';
                 return { success: true };
             }

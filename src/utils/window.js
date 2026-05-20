@@ -105,6 +105,7 @@ function getDefaultKeybinds() {
         toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
         nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
         analyzeScreen: isMac ? 'Cmd+/' : 'Ctrl+/',
+        collectScreen: isMac ? 'Cmd+.' : 'Ctrl+.',
         previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
         nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
         scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
@@ -320,6 +321,30 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
             console.log(`Registered analyzeScreen: ${keybinds.analyzeScreen}`);
         } catch (error) {
             console.error(`Failed to register analyzeScreen (${keybinds.analyzeScreen}):`, error);
+        }
+    }
+
+    // Register collect screen shortcut (Ctrl+. by default)
+    // Captures a screenshot into the multi-capture buffer without analyzing
+    if (keybinds.collectScreen) {
+        try {
+            globalShortcut.register(keybinds.collectScreen, async () => {
+                console.log('Collect Screen shortcut triggered (Ctrl+.)');
+                try {
+                    mainWindow.webContents.executeJavaScript(`
+                        if (window.collectScreenshot) {
+                            window.collectScreenshot();
+                        } else {
+                            console.error('collectScreenshot not available');
+                        }
+                    `);
+                } catch (error) {
+                    console.error('Error triggering screen collection:', error);
+                }
+            });
+            console.log(`Registered collectScreen: ${keybinds.collectScreen}`);
+        } catch (error) {
+            console.error(`Failed to register collectScreen (${keybinds.collectScreen}):`, error);
         }
     }
 }

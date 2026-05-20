@@ -322,6 +322,37 @@ export class CheatingDaddyApp extends LitElement {
             color: var(--text-primary);
         }
 
+        .capture-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: var(--radius-sm);
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid rgba(59, 130, 246, 0.4);
+            color: #60a5fa;
+            font-size: var(--font-size-xs);
+            font-family: var(--font-mono);
+            font-weight: var(--font-weight-semibold);
+            animation: capture-pulse 1.5s ease-in-out infinite;
+            -webkit-app-region: no-drag;
+            cursor: pointer;
+        }
+
+        .capture-badge:hover {
+            background: rgba(59, 130, 246, 0.3);
+        }
+
+        .capture-badge svg {
+            width: 12px;
+            height: 12px;
+        }
+
+        @keyframes capture-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
         /* Content inner */
         .content-inner {
             flex: 1;
@@ -381,7 +412,7 @@ export class CheatingDaddyApp extends LitElement {
         shouldAnimateResponse: { type: Boolean },
         _storageLoaded: { state: true },
         _updateAvailable: { state: true },
-        _whisperDownloading: { state: true },
+        _captureCount: { state: true },
     };
 
     constructor() {
@@ -406,7 +437,7 @@ export class CheatingDaddyApp extends LitElement {
         this._storageLoaded = false;
         this._timerInterval = null;
         this._updateAvailable = false;
-        this._whisperDownloading = false;
+        this._captureCount = 0;
         this._localVersion = '';
 
         this._loadFromStorage();
@@ -468,9 +499,6 @@ export class CheatingDaddyApp extends LitElement {
                 this._isClickThrough = isEnabled;
             });
             ipcRenderer.on('reconnect-failed', (_, data) => this.addNewResponse(data.message));
-            ipcRenderer.on('whisper-downloading', (_, downloading) => {
-                this._whisperDownloading = downloading;
-            });
         }
     }
 
@@ -484,7 +512,6 @@ export class CheatingDaddyApp extends LitElement {
             ipcRenderer.removeAllListeners('update-status');
             ipcRenderer.removeAllListeners('click-through-toggled');
             ipcRenderer.removeAllListeners('reconnect-failed');
-            ipcRenderer.removeAllListeners('whisper-downloading');
         }
     }
 
@@ -521,6 +548,17 @@ export class CheatingDaddyApp extends LitElement {
         this.statusText = text;
         if (text.includes('Ready') || text.includes('Listening') || text.includes('Error')) {
             this._currentResponseIsComplete = true;
+        }
+    }
+
+    updateCaptureCount(count) {
+        this._captureCount = count;
+        this.requestUpdate();
+    }
+
+    _clearCollected() {
+        if (window.cheatingDaddy && window.cheatingDaddy.clearCollectedScreenshots) {
+            window.cheatingDaddy.clearCollectedScreenshots();
         }
     }
 
@@ -606,15 +644,6 @@ export class CheatingDaddyApp extends LitElement {
                 }
                 return;
             }
-        } else if (providerMode === 'local') {
-            const success = await cheatingDaddy.initializeLocal(this.selectedProfile);
-            if (!success) {
-                const mainView = this.shadowRoot.querySelector('main-view');
-                if (mainView && mainView.triggerApiKeyError) {
-                    mainView.triggerApiKeyError();
-                }
-                return;
-            }
         } else {
             const apiKey = await cheatingDaddy.storage.getApiKey();
             if (!apiKey || apiKey === '') {
@@ -641,13 +670,6 @@ export class CheatingDaddyApp extends LitElement {
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
             await ipcRenderer.invoke('open-external', 'https://cheatingdaddy.com/help/api-key');
-        }
-    }
-
-    async handleGroqAPIKeyHelp() {
-        if (window.require) {
-            const { ipcRenderer } = window.require('electron');
-            await ipcRenderer.invoke('open-external', 'https://console.groq.com/keys');
         }
     }
 
@@ -745,7 +767,6 @@ export class CheatingDaddyApp extends LitElement {
                         .onProfileChange=${p => this.handleProfileChange(p)}
                         .onStart=${() => this.handleStart()}
                         .onExternalLink=${url => this.handleExternalLinkClick(url)}
-                        .whisperDownloading=${this._whisperDownloading}
                     ></main-view>
                 `;
 
@@ -946,6 +967,14 @@ export class CheatingDaddyApp extends LitElement {
                 </div>
                 <div class="live-bar-center">${profileLabels[this.selectedProfile] || 'Session'}</div>
                 <div class="live-bar-right">
+                    ${this._captureCount > 0
+                        ? html`<span class="capture-badge" @click=${() => this._clearCollected()} title="Click to clear collected screenshots">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8m-4-4h8"/>
+                            </svg>
+                            ${this._captureCount} captured
+                        </span>`
+                        : ''}
                     ${this.statusText ? html`<span class="live-bar-text">${this.statusText}</span>` : ''}
                     <span class="live-bar-text">${this.getElapsedTime()}</span>
                     ${this._isClickThrough ? html`<span class="live-bar-text">[click through]</span>` : ''}

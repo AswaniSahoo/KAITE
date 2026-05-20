@@ -14,7 +14,7 @@ const BUFFER_SIZE = 4096; // Increased buffer size for smoother audio
 // Voice Activity Detection (VAD) - Energy-based noise gate with speech trailing
 // Audio chunks below threshold are dropped UNLESS we recently detected speech.
 // This prevents cutting off the trailing end of words when volume naturally drops.
-const NOISE_GATE_THRESHOLD = 0.005;
+const NOISE_GATE_THRESHOLD = 0.004;
 const SPEECH_TRAIL_CHUNKS = 15; // Keep gate open for 15 chunks (~1.5s) after last speech
 let speechTrailCounter = 0; // Counts down from SPEECH_TRAIL_CHUNKS to 0
 
@@ -60,6 +60,10 @@ let offscreenCanvas = null;
 let offscreenContext = null;
 let currentImageQuality = 'medium'; // Store current image quality for manual screenshots
 
+// Multi-capture buffer: stores base64 screenshots until user triggers analysis
+let collectedScreenshots = [];
+
+
 const isLinux = process.platform === 'linux';
 const isMacOS = process.platform === 'darwin';
 
@@ -92,13 +96,6 @@ const storage = {
     },
     async setApiKey(apiKey) {
         return ipcRenderer.invoke('storage:set-api-key', apiKey);
-    },
-    async getOllamaCloudApiKey() {
-        const result = await ipcRenderer.invoke('storage:get-ollama-cloud-api-key');
-        return result.success ? result.data : '';
-    },
-    async setOllamaCloudApiKey(key) {
-        return ipcRenderer.invoke('storage:set-ollama-cloud-api-key', key);
     },
     async getAnthropicApiKey() {
         const result = await ipcRenderer.invoke('storage:get-anthropic-api-key');
@@ -216,23 +213,6 @@ async function initializeGemini(profile = 'interview', language = 'en-US') {
         } else {
             cheatingDaddy.setStatus('error');
         }
-    }
-}
-
-async function initializeLocal(profile = 'interview') {
-    const prefs = await storage.getPreferences();
-    const ollamaHost = prefs.ollamaHost || 'http://127.0.0.1:11434';
-    const ollamaModel = prefs.ollamaModel || 'llama3.1';
-    const whisperModel = prefs.whisperModel || 'Xenova/whisper-small';
-    const customPrompt = prefs.customPrompt || '';
-
-    const success = await ipcRenderer.invoke('initialize-local', ollamaHost, ollamaModel, whisperModel, profile, customPrompt);
-    if (success) {
-        cheatingDaddy.setStatus('Local AI Live');
-        return true;
-    } else {
-        cheatingDaddy.setStatus('error');
-        return false;
     }
 }
 
@@ -662,8 +642,12 @@ OUTPUT RULES:
 - No time/space complexity unless explicitly asked
 - Start your response with the actual answer immediately`;
 
-async function captureManualScreenshot(imageQuality = null) {
-    console.log('Manual screenshot triggered');
+/**
+ * Capture a screenshot and add it to the multi-capture buffer (no analysis yet).
+ * User presses Ctrl+. to collect, then Ctrl+/ to analyze all collected + current.
+ */
+async function collectScreenshot(imageQuality = null) {
+    console.log('Collecting screenshot for multi-capture...');
     const quality = imageQuality || currentImageQuality;
 
     if (!mediaStream) {
@@ -671,6 +655,22 @@ async function captureManualScreenshot(imageQuality = null) {
         return;
     }
 
+    const base64data = await captureScreenshotToBase64(quality);
+    if (!base64data) return;
+
+    collectedScreenshots.push(base64data);
+    console.log(`Screenshot collected (${collectedScreenshots.length} total)`);
+
+    // Notify the UI about the updated count
+    if (cheatingDaddyApp) {
+        cheatingDaddyApp.updateCaptureCount(collectedScreenshots.length);
+    }
+}
+
+/**
+ * Internal helper: captures screen to base64 string without sending anywhere.
+ */
+async function captureScreenshotToBase64(quality = 'medium') {
     // Lazy init of video element
     if (!hiddenVideo) {
         hiddenVideo = document.createElement('video');
@@ -684,20 +684,17 @@ async function captureManualScreenshot(imageQuality = null) {
             hiddenVideo.onloadedmetadata = () => resolve();
         });
 
-        // Lazy init of canvas based on video dimensions
         offscreenCanvas = document.createElement('canvas');
         offscreenCanvas.width = hiddenVideo.videoWidth;
         offscreenCanvas.height = hiddenVideo.videoHeight;
         offscreenContext = offscreenCanvas.getContext('2d');
     }
 
-    // Check if video is ready
     if (hiddenVideo.readyState < 2) {
         console.warn('Video not ready yet, skipping screenshot');
-        return;
+        return null;
     }
 
-    // Downscale to max 1920px wide for readable text — coding problems need clear details
     const MAX_WIDTH = 1920;
     const srcW = hiddenVideo.videoWidth;
     const srcH = hiddenVideo.videoHeight;
@@ -726,47 +723,97 @@ async function captureManualScreenshot(imageQuality = null) {
             qualityValue = 0.6;
     }
 
-    offscreenCanvas.toBlob(
-        async blob => {
-            if (!blob) {
-                console.error('Failed to create blob from canvas');
-                return;
-            }
-
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-                const base64data = reader.result.split(',')[1];
-
-                if (!base64data || base64data.length < 100) {
-                    console.error('Invalid base64 data generated');
+    return new Promise(resolve => {
+        offscreenCanvas.toBlob(
+            blob => {
+                if (!blob) {
+                    console.error('Failed to create blob from canvas');
+                    resolve(null);
                     return;
                 }
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const base64data = reader.result.split(',')[1];
+                    if (!base64data || base64data.length < 100) {
+                        console.error('Invalid base64 data generated');
+                        resolve(null);
+                        return;
+                    }
+                    resolve(base64data);
+                };
+                reader.readAsDataURL(blob);
+            },
+            'image/jpeg',
+            qualityValue
+        );
+    });
+}
 
-                console.log(`Sending image: ${destW}x${destH}, ~${Math.round(base64data.length / 1024)}KB`);
+async function captureManualScreenshot(imageQuality = null) {
+    console.log('Manual screenshot triggered');
+    const quality = imageQuality || currentImageQuality;
 
-                // Send image with prompt to HTTP API (response streams via IPC events)
-                const result = await ipcRenderer.invoke('send-image-content', {
-                    data: base64data,
-                    prompt: MANUAL_SCREENSHOT_PROMPT,
-                });
+    if (!mediaStream) {
+        console.error('No media stream available');
+        return;
+    }
 
-                if (result.success) {
-                    console.log(`Image response completed from ${result.model}`);
-                    // Response already displayed via streaming events (new-response/update-response)
-                } else {
-                    console.error('Failed to get image response:', result.error);
-                    cheatingDaddy.addNewResponse(`Error: ${result.error}`);
-                }
-            };
-            reader.readAsDataURL(blob);
-        },
-        'image/jpeg',
-        qualityValue
-    );
+    // Capture current screen
+    const currentBase64 = await captureScreenshotToBase64(quality);
+    if (!currentBase64) return;
+
+    // Check if we have collected screenshots (multi-capture mode)
+    const hasCollected = collectedScreenshots.length > 0;
+
+    if (hasCollected) {
+        // Multi-capture: combine all collected + current screenshot
+        const allImages = [...collectedScreenshots, currentBase64];
+        const totalCount = allImages.length;
+        console.log(`Multi-capture analysis: sending ${totalCount} screenshots`);
+
+        const multiPrompt = `You are analyzing ${totalCount} screenshots of the SAME question/problem captured as the user scrolled down. These images show consecutive parts of the content - treat them as ONE continuous document. Read ALL images carefully to understand the COMPLETE question before answering.\n\n` + MANUAL_SCREENSHOT_PROMPT;
+
+        const result = await ipcRenderer.invoke('send-image-content', {
+            data: allImages,
+            prompt: multiPrompt,
+            isMultiCapture: true,
+        });
+
+        // Clear the buffer after sending
+        collectedScreenshots = [];
+        if (cheatingDaddyApp) {
+            cheatingDaddyApp.updateCaptureCount(0);
+        }
+
+        if (result.success) {
+            console.log(`Multi-capture response completed from ${result.model}`);
+        } else {
+            console.error('Failed to get multi-capture response:', result.error);
+            cheatingDaddy.addNewResponse(`Error: ${result.error}`);
+        }
+    } else {
+        // Single capture: original behavior
+        const destW = offscreenCanvas.width;
+        const destH = offscreenCanvas.height;
+        console.log(`Sending image: ${destW}x${destH}, ~${Math.round(currentBase64.length / 1024)}KB`);
+
+        const result = await ipcRenderer.invoke('send-image-content', {
+            data: currentBase64,
+            prompt: MANUAL_SCREENSHOT_PROMPT,
+        });
+
+        if (result.success) {
+            console.log(`Image response completed from ${result.model}`);
+        } else {
+            console.error('Failed to get image response:', result.error);
+            cheatingDaddy.addNewResponse(`Error: ${result.error}`);
+        }
+    }
 }
 
 // Expose functions to global scope for external access
 window.captureManualScreenshot = captureManualScreenshot;
+window.collectScreenshot = collectScreenshot;
 
 function stopCapture() {
     if (screenshotInterval) {
@@ -1196,11 +1243,16 @@ const cheatingDaddy = {
     // Core functionality
     initializeGemini,
     initializeCloud,
-    initializeLocal,
     startCapture,
     stopCapture,
     sendTextMessage,
     handleShortcut,
+    collectScreenshot,
+    getCollectedCount: () => collectedScreenshots.length,
+    clearCollectedScreenshots: () => {
+        collectedScreenshots = [];
+        if (cheatingDaddyApp) cheatingDaddyApp.updateCaptureCount(0);
+    },
 
     // Storage API
     storage,

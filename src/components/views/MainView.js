@@ -194,27 +194,6 @@ export class MainView extends LitElement {
             text-decoration: underline;
         }
 
-        .whisper-label-row {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .whisper-spinner {
-            width: 12px;
-            height: 12px;
-            border: 2px solid var(--border);
-            border-top-color: var(--accent);
-            border-radius: 50%;
-            animation: whisper-spin 0.8s linear infinite;
-        }
-
-        @keyframes whisper-spin {
-            to {
-                transform: rotate(360deg);
-            }
-        }
-
         /* ── Start button ── */
 
         .start-button {
@@ -503,23 +482,16 @@ export class MainView extends LitElement {
         selectedProfile: { type: String },
         onProfileChange: { type: Function },
         isInitializing: { type: Boolean },
-        whisperDownloading: { type: Boolean },
         // Internal state
         _mode: { state: true },
         _token: { state: true },
         _geminiKey: { state: true },
-        _ollamaCloudKey: { state: true },
         _tokenError: { state: true },
         _keyError: { state: true },
         // Provider selection
         _textProvider: { state: true },
         _textModel: { state: true },
         _providerCatalog: { state: true },
-        // Local AI state
-        _ollamaHost: { state: true },
-        _ollamaModel: { state: true },
-        _whisperModel: { state: true },
-        _showLocalHelp: { state: true },
     };
 
     constructor() {
@@ -529,20 +501,14 @@ export class MainView extends LitElement {
         this.selectedProfile = 'interview';
         this.onProfileChange = () => {};
         this.isInitializing = false;
-        this.whisperDownloading = false;
 
         this._mode = 'cloud';
         this._token = '';
         this._geminiKey = '';
-        this._ollamaCloudKey = '';
         this._openrouterKey = '';
         this._anthropicKey = '';
         this._tokenError = false;
         this._keyError = false;
-        this._showLocalHelp = false;
-        this._ollamaHost = 'http://127.0.0.1:11434';
-        this._ollamaModel = 'llama3.1';
-        this._whisperModel = 'Xenova/whisper-small';
         this._textProvider = 'gemini';
         this._textModel = '';
         this._providerCatalog = {};
@@ -570,18 +536,12 @@ export class MainView extends LitElement {
             // Load keys
             this._token = creds.cloudToken || '';
             this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
-            this._ollamaCloudKey = (await cheatingDaddy.storage.getOllamaCloudApiKey().catch(() => '')) || '';
             this._openrouterKey = (await cheatingDaddy.storage.getOpenrouterApiKey().catch(() => '')) || '';
             this._anthropicKey = (await cheatingDaddy.storage.getAnthropicApiKey().catch(() => '')) || '';
 
             // Load provider selection
             this._textProvider = prefs.textProvider || 'gemini';
             this._textModel = prefs.textModel || '';
-
-            // Load local AI settings
-            this._ollamaHost = prefs.ollamaHost || 'http://127.0.0.1:11434';
-            this._ollamaModel = prefs.ollamaModel || 'llama3.1';
-            this._whisperModel = prefs.whisperModel || 'Xenova/whisper-small';
 
             this.requestUpdate();
         } catch (e) {
@@ -748,12 +708,6 @@ export class MainView extends LitElement {
         this.requestUpdate();
     }
 
-    async _saveOllamaCloudKey(val) {
-        this._ollamaCloudKey = val;
-        await cheatingDaddy.storage.setOllamaCloudApiKey(val);
-        this.requestUpdate();
-    }
-
     async _saveOpenrouterKey(val) {
         this._openrouterKey = val;
         await cheatingDaddy.storage.setOpenrouterApiKey(val);
@@ -782,24 +736,6 @@ export class MainView extends LitElement {
         this.requestUpdate();
     }
 
-    async _saveOllamaHost(val) {
-        this._ollamaHost = val;
-        await cheatingDaddy.storage.updatePreference('ollamaHost', val);
-        this.requestUpdate();
-    }
-
-    async _saveOllamaModel(val) {
-        this._ollamaModel = val;
-        await cheatingDaddy.storage.updatePreference('ollamaModel', val);
-        this.requestUpdate();
-    }
-
-    async _saveWhisperModel(val) {
-        this._whisperModel = val;
-        await cheatingDaddy.storage.updatePreference('whisperModel', val);
-        this.requestUpdate();
-    }
-
     _handleProfileChange(e) {
         this.onProfileChange(e.target.value);
     }
@@ -819,11 +755,6 @@ export class MainView extends LitElement {
             if (!this._geminiKey.trim()) {
                 this._keyError = true;
                 this.requestUpdate();
-                return;
-            }
-        } else if (this._mode === 'local') {
-            // Local mode doesn't need API keys, just Ollama host
-            if (!this._ollamaHost.trim()) {
                 return;
             }
         }
@@ -938,10 +869,6 @@ export class MainView extends LitElement {
                     <span class="mode-card-title">Use your API keys</span>
                     <span class="mode-card-desc">Bring your own Anthropic / Gemini / OpenRouter keys</span>
                 </div>
-                <div class="mode-card" @click=${() => this._saveMode('local')}>
-                    <span class="mode-card-title">Use local AI</span>
-                    <span class="mode-card-desc">Run Ollama + Whisper on your machine</span>
-                </div>
             </div>
         `;
     }
@@ -998,44 +925,11 @@ export class MainView extends LitElement {
             </div>
 
             <div class="form-group">
-                <label class="form-label">Ollama Cloud API Key</label>
-                <input
-                    type="password"
-                    placeholder="Optional, free tier with Qwen 3.5 + Gemma 4"
-                    .value=${this._ollamaCloudKey}
-                    @input=${e => this._saveOllamaCloudKey(e.target.value)}
-                />
-                <div class="form-hint">
-                    <span class="link" @click=${() => this.onExternalLink('https://ollama.com/settings/keys')}>Get Ollama Cloud key</span>
-                    (free, resets every 5h, powerful reasoning models)
-                </div>
-            </div>
-
-            <div class="form-group">
-                <div
-                    class="form-hint"
-                    style="background: var(--bg-elevated); padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--accent);"
-                >
-                    <strong>Local Fallback:</strong> Install
-                    <span class="link" @click=${() => this.onExternalLink('https://ollama.com/download')}>Ollama</span> and run
-                    <code style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-surface); padding: 1px 4px; border-radius: 3px;"
-                        >ollama serve</code
-                    >
-                    in a terminal for offline fallback. Pull a vision model first:
-                    <code style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-surface); padding: 1px 4px; border-radius: 3px;"
-                        >ollama pull gemma4:latest</code
-                    >
-                </div>
-            </div>
-
-            <div class="form-group">
                 <label class="form-label">Text Response Provider</label>
                 <select .value=${this._textProvider} @change=${e => this._saveTextProvider(e.target.value)}>
                     <option value="anthropic" ?selected=${this._textProvider === 'anthropic'}>Anthropic Claude (Best for Interviews)</option>
                     <option value="gemini" ?selected=${this._textProvider === 'gemini'}>Gemini (Free, Recommended)</option>
                     <option value="openrouter" ?selected=${this._textProvider === 'openrouter'}>OpenRouter (Any Model)</option>
-                    <option value="ollamaCloud" ?selected=${this._textProvider === 'ollamaCloud'}>Ollama Cloud (Free, Qwen/Gemma)</option>
-                    <option value="ollama" ?selected=${this._textProvider === 'ollama'}>Ollama (Local)</option>
                 </select>
             </div>
 
@@ -1063,82 +957,6 @@ export class MainView extends LitElement {
                 <div class="cloud-promo-desc">No API keys, no setup, no billing headaches. It just works.</div>
             </div>
 
-            <div class="mode-links">
-                <button class="mode-link" @click=${() => this._saveMode('local')}>Use local AI</button>
-            </div>
-        `;
-    }
-
-    // ── Local AI mode ──
-
-    _renderLocalMode() {
-        return html`
-            <div class="form-group">
-                <label class="form-label">Ollama Host</label>
-                <input
-                    type="text"
-                    placeholder="http://127.0.0.1:11434"
-                    .value=${this._ollamaHost}
-                    @input=${e => this._saveOllamaHost(e.target.value)}
-                />
-                <div
-                    class="form-hint"
-                    style="background: var(--bg-elevated); padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--accent);"
-                >
-                    <strong>Setup:</strong> 1) Install
-                    <span class="link" @click=${() => this.onExternalLink('https://ollama.com/download')}>Ollama</span> 2) Open a terminal and run
-                    <code style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-surface); padding: 1px 4px; border-radius: 3px;"
-                        >ollama serve</code
-                    >
-                    3) Keep it running while using KAITE
-                </div>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Ollama Model</label>
-                <input type="text" placeholder="llama3.1" .value=${this._ollamaModel} @input=${e => this._saveOllamaModel(e.target.value)} />
-                <div class="form-hint">
-                    Run
-                    <code
-                        style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-elevated); padding: 1px 4px; border-radius: 3px;"
-                        >ollama pull ${this._ollamaModel}</code
-                    >
-                    first
-                </div>
-            </div>
-
-            <div class="form-group">
-                <div class="whisper-label-row">
-                    <label class="form-label">Whisper Model</label>
-                    ${this.whisperDownloading ? html`<div class="whisper-spinner"></div>` : ''}
-                </div>
-                <select .value=${this._whisperModel} @change=${e => this._saveWhisperModel(e.target.value)}>
-                    <option value="Xenova/whisper-tiny" ?selected=${this._whisperModel === 'Xenova/whisper-tiny'}>
-                        Tiny (fastest, least accurate)
-                    </option>
-                    <option value="Xenova/whisper-base" ?selected=${this._whisperModel === 'Xenova/whisper-base'}>Base</option>
-                    <option value="Xenova/whisper-small" ?selected=${this._whisperModel === 'Xenova/whisper-small'}>Small (recommended)</option>
-                    <option value="Xenova/whisper-medium" ?selected=${this._whisperModel === 'Xenova/whisper-medium'}>
-                        Medium (most accurate, slowest)
-                    </option>
-                </select>
-                <div class="form-hint">${this.whisperDownloading ? 'Downloading model...' : 'Downloaded automatically on first use'}</div>
-            </div>
-
-            ${this._renderStartButton()} ${this._renderDivider()}
-
-            <div class="cloud-promo" @click=${() => this._saveMode('cloud')}>
-                <div class="cloud-promo-glow"></div>
-                <div class="cloud-promo-header">
-                    <span class="cloud-promo-title">Switch to KAITE Cloud</span>
-                    <span class="cloud-promo-arrow">&rarr;</span>
-                </div>
-                <div class="cloud-promo-desc">No API keys, no setup, no billing headaches. It just works.</div>
-            </div>
-
-            <div class="mode-links">
-                <button class="mode-link" @click=${() => this._saveMode('byok')}>Use own API keys</button>
-            </div>
         `;
     }
 
@@ -1157,116 +975,16 @@ export class MainView extends LitElement {
 
         return html`
             <div class="form-wrapper">
-                ${this._mode === 'local'
-                    ? html`
-                          <div class="title-row">
-                              <div class="page-title">KAITE <span class="mode-suffix">Local AI</span></div>
-                              <button
-                                  class="help-btn"
-                                  @click=${() => {
-                                      this._showLocalHelp = !this._showLocalHelp;
-                                  }}
-                              >
-                                  ${this._showLocalHelp ? closeIcon : helpIcon}
-                              </button>
-                          </div>
-                      `
-                    : html`
-                          <div class="page-title">${this._mode === 'cloud' ? 'KAITE Cloud' : html`KAITE <span class="mode-suffix">BYOK</span>`}</div>
-                      `}
+                <div class="page-title">${this._mode === 'cloud' ? 'KAITE Cloud' : html`KAITE <span class="mode-suffix">BYOK</span>`}</div>
                 <div class="page-subtitle">
-                    ${this._mode === 'cloud'
-                        ? 'Enter your invite code to get started'
-                        : this._mode === 'byok'
-                          ? 'Bring your own API keys'
-                          : 'Run models locally on your machine'}
+                    ${this._mode === 'cloud' ? 'Enter your invite code to get started' : 'Bring your own API keys'}
                 </div>
 
                 ${this._mode === 'cloud' ? this._renderCloudMode() : ''} ${this._mode === 'byok' ? this._renderByokMode() : ''}
-                ${this._mode === 'local' ? (this._showLocalHelp ? this._renderLocalHelp() : this._renderLocalMode()) : ''}
             </div>
         `;
     }
 
-    _renderLocalHelp() {
-        return html`
-            <div class="help-content">
-                <div class="help-section">
-                    <div class="help-section-title">What is Ollama?</div>
-                    <div class="help-section-text">
-                        Ollama lets you run large language models locally on your machine. Everything stays on your computer — no data leaves your
-                        device.
-                    </div>
-                </div>
-
-                <div class="help-section">
-                    <div class="help-section-title">Install Ollama</div>
-                    <div class="help-section-text">
-                        Download from
-                        <span class="help-link" @click=${() => this.onExternalLink('https://ollama.com/download')}>ollama.com/download</span> and
-                        install it.
-                    </div>
-                </div>
-
-                <div class="help-section">
-                    <div class="help-section-title">Ollama must be running</div>
-                    <div class="help-section-text">
-                        Ollama needs to be running before you start a session. If it's not running, open your terminal and type:
-                    </div>
-                    <code class="help-code">ollama serve</code>
-                </div>
-
-                <div class="help-section">
-                    <div class="help-section-title">Pull a model</div>
-                    <div class="help-section-text">Download a model before first use:</div>
-                    <code class="help-code">ollama pull gemma3:4b</code>
-                </div>
-
-                <div class="help-section">
-                    <div class="help-section-title">Recommended models</div>
-                    <div class="help-models">
-                        <div class="help-model"><span class="help-model-name">gemma3:4b</span><span>4B — fast, multimodal (images + text)</span></div>
-                        <div class="help-model"><span class="help-model-name">mistral-small</span><span>8B — solid all-rounder, text only</span></div>
-                    </div>
-                    <div class="help-section-text">gemma3:4b and above supports images — screenshots will work with these models.</div>
-                </div>
-
-                <div class="help-section">
-                    <div class="help-warn">
-                        Avoid "thinking" models (e.g. deepseek-r1, qwq). Local inference is already slower — a thinking model adds extra delay before
-                        responding.
-                    </div>
-                </div>
-
-                <div class="help-section">
-                    <div class="help-section-title">Whisper</div>
-                    <div class="help-section-text">
-                        The Whisper speech-to-text model is downloaded automatically the first time you start a session. This is a one-time download.
-                    </div>
-                </div>
-
-                <hr class="help-divider" />
-
-                <div class="help-section">
-                    <div class="help-section-title">Computer hanging or slow?</div>
-                    <div class="help-section-text">
-                        Running models locally uses a lot of RAM and CPU. If your computer slows down or freezes, it's likely the LLM. Cloud mode
-                        gives you faster, better responses without any load on your machine.
-                    </div>
-                </div>
-
-                <button
-                    class="help-cloud-btn"
-                    @click=${() => {
-                        this._showLocalHelp = false;
-                        this._saveMode('cloud');
-                    }}
-                >
-                    Switch to Cloud
-                </button>
-            </div>
-        `;
-    }
 }
 
 customElements.define('main-view', MainView);

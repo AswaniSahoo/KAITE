@@ -119,28 +119,6 @@ function setupStorageIpcHandlers() {
         }
     });
 
-    ipcMain.handle('storage:get-ollama-cloud-api-key', async () => {
-        try {
-            const creds = storage.getCredentials();
-            return { success: true, data: creds.ollamaApiKey || '' };
-        } catch (error) {
-            console.error('Error getting Ollama Cloud API key:', error);
-            return { success: false, error: error.message };
-        }
-    });
-
-    ipcMain.handle('storage:set-ollama-cloud-api-key', async (event, key) => {
-        try {
-            const creds = storage.getCredentials();
-            creds.ollamaApiKey = key;
-            storage.setCredentials(creds);
-            return { success: true };
-        } catch (error) {
-            console.error('Error setting Ollama Cloud API key:', error);
-            return { success: false, error: error.message };
-        }
-    });
-
     // ============ PREFERENCES ============
     ipcMain.handle('storage:get-preferences', async () => {
         try {
