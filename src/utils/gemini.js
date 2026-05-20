@@ -30,19 +30,6 @@ let currentCustomPrompt = null;
 let isInitializingSession = false;
 let currentSystemPrompt = null;
 
-function formatSpeakerResults(results) {
-    let text = '';
-    for (const result of results) {
-        if (result.transcript && result.speakerId) {
-            const speakerLabel = result.speakerId === 1 ? 'Interviewer' : 'Candidate';
-            text += `[${speakerLabel}]: ${result.transcript}\n`;
-        }
-    }
-    return text;
-}
-
-module.exports.formatSpeakerResults = formatSpeakerResults;
-
 // Live API model fallback: track if primary model's quota is exhausted
 let liveModelQuotaExhausted = false;
 
@@ -51,8 +38,10 @@ let systemAudioProc = null;
 let messageBuffer = '';
 
 // Debounce: dispatch transcription after silence (no new VALID chunks)
-// This fires BEFORE generationComplete in most cases, saving 1-3 seconds
-const TRANSCRIPTION_DEBOUNCE_MS = 2000; // 2s silence = speaker actually finished
+// Adaptive debounce: shorter for questions, longer for short fragments
+const DEBOUNCE_MS_DEFAULT = 1200; // 1.2s — natural end-of-question pause
+const DEBOUNCE_MS_QUESTION = 800; // 0.8s — question mark detected, likely done
+const DEBOUNCE_MS_SHORT = 1500; // 1.5s — short fragment, might be mid-sentence
 let transcriptionDebounceTimer = null;
 let isCapturingSpeech = false; // tracks if we've shown "Capturing..." status
 
@@ -64,6 +53,21 @@ function chunkHasLatinChars(text) {
     return /[a-zA-Z]/.test(text);
 }
 
+function getAdaptiveDebounceMs() {
+    const text = currentTranscription.trim();
+    if (!text) return DEBOUNCE_MS_DEFAULT;
+
+    const words = text.split(/\s+/).filter(w => w.length > 0);
+
+    // If last word/char ends with '?' — likely finished asking a question
+    if (/\?\s*$/.test(text)) return DEBOUNCE_MS_QUESTION;
+
+    // Short fragment (<8 words, no question mark) — might be mid-sentence, wait longer
+    if (words.length < 8) return DEBOUNCE_MS_SHORT;
+
+    return DEBOUNCE_MS_DEFAULT;
+}
+
 function resetTranscriptionDebounce() {
     clearTranscriptionDebounce();
 
@@ -73,10 +77,12 @@ function resetTranscriptionDebounce() {
         sendToRenderer('update-status', 'Capturing speech...');
     }
 
+    const debounceMs = getAdaptiveDebounceMs();
+
     transcriptionDebounceTimer = setTimeout(() => {
         isCapturingSpeech = false;
         if (currentTranscription.trim() !== '') {
-            console.log('[DEBOUNCE] Silence detected, dispatching...');
+            console.log(`[DEBOUNCE] Silence detected (${debounceMs}ms), dispatching...`);
             sendToRenderer('update-status', 'Analyzing...');
             const text = currentTranscription;
             currentTranscription = '';
@@ -85,7 +91,7 @@ function resetTranscriptionDebounce() {
         } else {
             sendToRenderer('update-status', 'Listening...');
         }
-    }, TRANSCRIPTION_DEBOUNCE_MS);
+    }, debounceMs);
 }
 
 function clearTranscriptionDebounce() {
@@ -279,7 +285,7 @@ function isValidEnglishTranscription(text) {
 // Dispatch lock: prevents overlapping API calls and adds cooldown between responses
 let isDispatching = false;
 let lastDispatchTime = 0;
-const DISPATCH_COOLDOWN_MS = 3000; // 3 seconds cooldown after a response completes
+const DISPATCH_COOLDOWN_MS = 1500; // 1.5s cooldown — fast enough for follow-up questions
 
 /**
  * Check if a transcription is just interviewer filler, not a real question.
@@ -364,6 +370,26 @@ async function dispatchToTextProvider(transcription) {
     console.log(`[INTERVIEWER] "${cleanedTranscription}"`);
     console.log('='.repeat(80) + '\n');
 
+    // Build structured context prefix from conversation history
+    let contextPrefix = '';
+    if (conversationCtxHistory.length > 0) {
+        const recentPairs = [];
+        for (let i = 0; i < conversationCtxHistory.length; i += 2) {
+            const q = conversationCtxHistory[i];
+            const a = conversationCtxHistory[i + 1];
+            if (q && a) {
+                // Truncate long answers to first sentence for context density
+                const shortAnswer = a.content.length > 120 ? a.content.substring(0, 120).replace(/\s\S*$/, '...') : a.content;
+                recentPairs.push(`Q: ${q.content}\nA: ${shortAnswer}`);
+            }
+        }
+        if (recentPairs.length > 0) {
+            // Keep last 5 Q&A pairs for context
+            const relevantPairs = recentPairs.slice(-5);
+            contextPrefix = '[CONVERSATION SO FAR]\n' + relevantPairs.join('\n\n') + '\n\n[CURRENT QUESTION]\n';
+        }
+    }
+
     const prefs = getPreferences();
 
     // Determine primary provider and model
@@ -394,7 +420,8 @@ async function dispatchToTextProvider(transcription) {
         let resolvedProvider = provider;
         let resolvedModel = model;
 
-        const result = await sendToProvider(cleanedTranscription, {
+        const messageWithContext = contextPrefix ? contextPrefix + cleanedTranscription : cleanedTranscription;
+        const result = await sendToProvider(messageWithContext, {
             provider,
             model,
             apiKey: apiKeys[provider] || '',
@@ -480,13 +507,12 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     // Gemini Live is used ONLY as a transcription relay.
     // The actual interview responses come from Anthropic/text providers via dispatchToTextProvider().
     const transcriptionPrompt =
-        'You are a silent transcription relay. Your ONLY job is to listen to the audio and transcribe what people say. ' +
-        'CRITICAL RULES: ' +
-        '1. Always transcribe in English ONLY, regardless of what language you think you hear. ' +
-        '2. If you cannot understand what was said, output nothing. Do NOT guess or transcribe in other languages. ' +
-        '3. Ignore background noise, music, system sounds, and unclear mumbling entirely. ' +
-        '4. Do NOT generate any substantive response. When someone finishes speaking, just reply with a single period "." and nothing else. ' +
-        '5. Never answer questions, never give advice, never acknowledge what was said beyond the single period.';
+        'Transcribe all audio input to English text only. ' +
+        'Output the transcribed text exactly as spoken, nothing else. ' +
+        'If the audio is unclear, silent, or contains only non-speech sounds (typing, music, fans), output nothing. ' +
+        'Never respond to, answer, or comment on the audio content. ' +
+        'Never generate text in any language other than English. ' +
+        'Never output noise markers, annotations, or metadata.';
 
     // Initialize new conversation session only on first connect
     if (!isReconnect) {
@@ -517,11 +543,8 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                         console.log('----------------', message);
                     }
 
-                    // Handle input transcription (what was spoken)
-                    if (message.serverContent?.inputTranscription?.results) {
-                        currentTranscription += formatSpeakerResults(message.serverContent.inputTranscription.results);
-                        resetTranscriptionDebounce();
-                    } else if (message.serverContent?.inputTranscription?.text) {
+                    // Handle input transcription (what was spoken — system audio only)
+                    if (message.serverContent?.inputTranscription?.text) {
                         const text = message.serverContent.inputTranscription.text;
                         if (text.trim() !== '') {
                             currentTranscription += text;
@@ -598,15 +621,9 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                 },
             },
             config: {
-                responseModalities: [Modality.AUDIO],
-                // NOTE: proactiveAudio intentionally omitted - Gemini should NOT jump in unprompted
-                // NOTE: outputAudioTranscription intentionally omitted - we don't need Gemini's response text
-                // Enable input transcription (what the interviewer/user says)
-                inputAudioTranscription: {
-                    enableSpeakerDiarization: true,
-                    minSpeakerCount: 2,
-                    maxSpeakerCount: 2,
-                },
+                responseModalities: [Modality.TEXT],
+                // Enable input transcription — this is the core feature we use
+                inputAudioTranscription: {},
                 tools: enabledTools,
                 contextWindowCompression: { slidingWindow: {} },
                 speechConfig: { languageCode: language },
@@ -1223,6 +1240,9 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         }
     });
 
+    // Mic audio is NOT sent to Gemini Live for transcription.
+    // Only system audio (interviewer voice) triggers AI responses.
+    // Mic channel exists for cloud mode only (where the cloud server handles separation).
     ipcMain.handle('send-mic-audio-content', async (event, { data, mimeType }) => {
         if (currentProviderMode === 'cloud') {
             try {
@@ -1234,17 +1254,8 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
                 return { success: false, error: error.message };
             }
         }
-        if (!geminiSessionRef.current) return { success: false, error: 'No active Gemini session' };
-        try {
-            process.stdout.write(',');
-            await geminiSessionRef.current.sendRealtimeInput({
-                audio: { data: data, mimeType: mimeType },
-            });
-            return { success: true };
-        } catch (error) {
-            console.error('Error sending mic audio:', error);
-            return { success: false, error: error.message };
-        }
+        // In BYOK mode, mic audio is ignored — only system audio triggers AI
+        return { success: true };
     });
 
     ipcMain.handle('send-image-content', async (event, { data, prompt, isMultiCapture }) => {
@@ -1439,5 +1450,4 @@ module.exports = {
     sendAudioToGemini,
     sendImageWithFailover,
     setupGeminiIpcHandlers,
-    formatSpeakerResults,
 };
